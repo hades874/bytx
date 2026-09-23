@@ -1,0 +1,74 @@
+# bytx configuration.
+# Paths are relative to the project root unless absolute.
+
+[paths]
+data_dir = "data"
+models_dir = "models"
+
+[asr]
+# Which converted CTranslate2 model to use by default. See `bytx bench` to compare.
+model = "tugstugi-medium-bn"
+# auto | cuda | cpu
+device = "auto"
+# fp16 is fastest on a 4GB GPU; falls back automatically if the GPU rejects it (see doctor).
+compute_type = "float16"
+# beam_size directly multiplies decoding cost, and GPUs without Tensor
+# Cores (e.g. GTX 16xx) don't get Whisper's usual fp16 speedup, so this
+# matters a lot on modest hardware. Measured on a GTX 1650 with
+# whisper-medium: beam_size=1 -> RTF ~0.9 (~real-time); beam_size=5 was
+# well over 5x slower for a small accuracy gain. Raise this if you have a
+# GPU with Tensor Cores (RTX-series) or don't mind slower batch runs.
+beam_size = 1
+vad_filter = true
+vad_min_silence_ms = 500
+# The Bangla fine-tune (tugstugi-medium-bn) does not reliably predict its
+# own timestamp tokens -- measured output was [0.0 - 0.0] for every
+# segment. With this on, faster-whisper skips timestamp-token prediction
+# and instead reports each VAD-detected speech chunk's real start/end
+# (coarser granularity -- one segment per chunk, not per phrase -- but
+# accurate). Safe to leave on for large-v3-turbo too.
+without_timestamps = true
+condition_on_previous_text = false
+# repetition_penalty != 1.0 and no_repeat_ngram_size != 0 force faster-whisper
+# into a much slower, per-token CPU<->GPU score-adjustment path (measured:
+# 5-10x slower on a GTX 1650). Hallucinated repeats are instead cleaned up
+# after the fact by transcribe.collapse_repeated_ngrams(), which is nearly
+# free. Only enable these if you hit bad repeats collapse_repeated_ngrams
+# doesn't catch, and expect it to cost real speed.
+repetition_penalty = 1.0
+no_repeat_ngram_size = 0
+# Optional comma-separated hotwords/subject terms to bias decoding, e.g. "কোয়ান্টাম, নিউটন"
+initial_prompt = ""
+
+[asr.models.tugstugi-medium-bn]
+source = "bengaliAI/tugstugi_bengaliai-asr_whisper-medium"
+language = "bn"
+
+[asr.models.large-v3-turbo]
+source = "deepdml/faster-whisper-large-v3-turbo-ct2"
+language = "bn"
+already_ct2 = true
+
+[fetch]
+# Skip uploader (human) subtitles and always run ASR when true.
+force_asr = false
+sleep_interval_s = 1
+max_sleep_interval_s = 5
+# Set to a browser name (e.g. "chrome", "edge", "firefox") to use its cookies for age/region-gated videos.
+cookies_from_browser = ""
+
+[ollama]
+host = "http://127.0.0.1:11434"
+embed_model = "bge-m3"
+chat_model = "gemma3:4b"
+num_ctx = 8192
+
+[rag]
+chunk_seconds = 75
+chunk_overlap_seconds = 15
+top_k = 8
+
+[summarize]
+enabled = true
+map_window_minutes = 10
+language = "bn"
