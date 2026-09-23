@@ -1,0 +1,54 @@
+[project]
+name = "bytx"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "cmops-10ms", email = "cm.ops.10ms@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper>=1.2.1",
+    "httpx>=0.28.1",
+    "jiwer>=4.0.0",
+    "numpy>=2.5.3",
+    "nvidia-cublas-cu12>=12.9.2.10",
+    "nvidia-cudnn-cu12>=9.26.0.51",
+    "rich>=15.0.0",
+    "typer>=0.27.2",
+    "yt-dlp[default]>=2026.8.19",
+]
+
+[project.scripts]
+bytx = "bytx:main"
+
+[project.optional-dependencies]
+convert = [
+    "torch>=2.14.0",
+    "transformers>=4.23",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test fixtures often need long inline literals (Bangla text, SQL, dataclass
+# construction); readability there matters more than the 110-char wrap.
+"tests/*" = ["E501"]
+# Typer's API requires calling typer.Option()/typer.Argument() as argument
+# defaults -- that's the documented pattern, not a mutable-default bug.
+"src/bytx/cli.py" = ["B008"]
