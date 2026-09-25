@@ -4,34 +4,43 @@
 [paths]
 data_dir = "data"
 models_dir = "models"
+# Human-browsable, git-tracked copies of transcripts, named "<channel> - <title>".
+# Separate from data/videos/<id>/, which is gitignored and DB-linked.
+transcribed_files_dir = "yt-transcribed-files"
 
 [asr]
 # Which converted CTranslate2 model to use by default. See `bytx bench` to compare.
 model = "tugstugi-medium-bn"
 # auto | cuda | cpu
 device = "auto"
-# fp16 is fastest on a 4GB GPU; falls back automatically if the GPU rejects it (see doctor).
+# fp16 suits the RTX 4070; falls back automatically if the GPU rejects it (see doctor).
 compute_type = "float16"
-# beam_size directly multiplies decoding cost, and GPUs without Tensor
-# Cores (e.g. GTX 16xx) don't get Whisper's usual fp16 speedup, so this
-# matters a lot on modest hardware. Measured on a GTX 1650 with
-# whisper-medium: beam_size=1 -> RTF ~0.9 (~real-time); beam_size=5 was
-# well over 5x slower for a small accuracy gain. Raise this if you have a
-# GPU with Tensor Cores (RTX-series) or don't mind slower batch runs.
+# beam_size directly multiplies decoding cost. Raise this only if you want
+# the accuracy gain and don't mind slower batch runs.
 beam_size = 1
 vad_filter = true
 vad_min_silence_ms = 500
+# Speech is cut into clips of at most this many seconds (at VAD pauses) and
+# each clip is decoded on its own. Whisper stops generating after 224 tokens
+# per window and Bengali needs ~0.7 tokens/char, so a 30 s window overflows
+# and the text is cut mid-sentence (the rest of the window is lost). 12 s
+# clips stay well under the cap; transcribe.py also re-splits any clip that
+# still hits it. Lower this for very fast speakers, don't raise it past ~15.
+max_clip_seconds = 12
+# Silero VAD sensitivity (lower = keeps quieter/noisier speech) and padding
+# added around each detected speech chunk.
+vad_threshold = 0.5
+vad_speech_pad_ms = 400
 # The Bangla fine-tune (tugstugi-medium-bn) does not reliably predict its
 # own timestamp tokens -- measured output was [0.0 - 0.0] for every
-# segment. With this on, faster-whisper skips timestamp-token prediction
-# and instead reports each VAD-detected speech chunk's real start/end
-# (coarser granularity -- one segment per chunk, not per phrase -- but
-# accurate). Safe to leave on for large-v3-turbo too.
+# segment. With this on, timestamp-token prediction is skipped and each
+# segment's start/end are the real boundaries of the clip it was decoded
+# from (one segment per clip, roughly one per phrase). Safe to leave on for
+# large-v3-turbo too.
 without_timestamps = true
 condition_on_previous_text = false
 # repetition_penalty != 1.0 and no_repeat_ngram_size != 0 force faster-whisper
-# into a much slower, per-token CPU<->GPU score-adjustment path (measured:
-# 5-10x slower on a GTX 1650). Hallucinated repeats are instead cleaned up
+# into a much slower, per-token CPU<->GPU score-adjustment path. Hallucinated repeats are instead cleaned up
 # after the fact by transcribe.collapse_repeated_ngrams(), which is nearly
 # free. Only enable these if you hit bad repeats collapse_repeated_ngrams
 # doesn't catch, and expect it to cost real speed.

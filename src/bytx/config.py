@@ -35,6 +35,11 @@ class AsrConfig:
     no_repeat_ngram_size: int
     initial_prompt: str
     models: dict[str, AsrModelConfig] = field(default_factory=dict)
+    # Decode-window sizing. Whisper stops after 224 tokens per window, which
+    # Bengali overflows in well under 30 s, so audio is cut into short clips.
+    max_clip_seconds: float = 12.0
+    vad_threshold: float = 0.5
+    vad_speech_pad_ms: int = 400
 
     def active_model(self) -> AsrModelConfig:
         try:
@@ -81,6 +86,7 @@ class SummarizeConfig:
 class PathsConfig:
     data_dir: Path
     models_dir: Path
+    transcribed_files_dir: Path
 
     @property
     def videos_dir(self) -> Path:
@@ -110,6 +116,7 @@ class Config:
         self.paths.videos_dir.mkdir(parents=True, exist_ok=True)
         self.paths.audio_dir.mkdir(parents=True, exist_ok=True)
         self.paths.models_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.transcribed_files_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _resolve(root: Path, raw: str) -> Path:
@@ -142,6 +149,9 @@ def load_config(path: str | Path | None = None) -> Config:
     paths = PathsConfig(
         data_dir=_resolve(root, paths_raw.get("data_dir", "data")),
         models_dir=_resolve(root, paths_raw.get("models_dir", "models")),
+        transcribed_files_dir=_resolve(
+            root, paths_raw.get("transcribed_files_dir", "yt-transcribed-files")
+        ),
     )
 
     asr_raw = raw.get("asr", {})
@@ -159,15 +169,18 @@ def load_config(path: str | Path | None = None) -> Config:
         model=asr_raw.get("model", "tugstugi-medium-bn"),
         device=asr_raw.get("device", "auto"),
         compute_type=asr_raw.get("compute_type", "float16"),
-        beam_size=asr_raw.get("beam_size", 5),
+        beam_size=asr_raw.get("beam_size", 1),
         vad_filter=asr_raw.get("vad_filter", True),
         vad_min_silence_ms=asr_raw.get("vad_min_silence_ms", 500),
         without_timestamps=asr_raw.get("without_timestamps", True),
         condition_on_previous_text=asr_raw.get("condition_on_previous_text", False),
-        repetition_penalty=asr_raw.get("repetition_penalty", 1.1),
-        no_repeat_ngram_size=asr_raw.get("no_repeat_ngram_size", 3),
+        repetition_penalty=asr_raw.get("repetition_penalty", 1.0),
+        no_repeat_ngram_size=asr_raw.get("no_repeat_ngram_size", 0),
         initial_prompt=asr_raw.get("initial_prompt", ""),
         models=models,
+        max_clip_seconds=asr_raw.get("max_clip_seconds", 12.0),
+        vad_threshold=asr_raw.get("vad_threshold", 0.5),
+        vad_speech_pad_ms=asr_raw.get("vad_speech_pad_ms", 400),
     )
 
     fetch_raw = raw.get("fetch", {})

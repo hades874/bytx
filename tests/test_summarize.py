@@ -29,7 +29,10 @@ class FakeOllama:
 def make_config(language: str = "bn", map_window_minutes: int = 10) -> Config:
     return Config(
         root=Path("."),
-        paths=PathsConfig(data_dir=Path("data"), models_dir=Path("models")),
+        paths=PathsConfig(
+            data_dir=Path("data"), models_dir=Path("models"),
+            transcribed_files_dir=Path("yt-transcribed-files"),
+        ),
         asr=AsrConfig(
             model="x", device="auto", compute_type="float16", beam_size=5,
             vad_filter=True, vad_min_silence_ms=500, without_timestamps=True, condition_on_previous_text=False,

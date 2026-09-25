@@ -1,7 +1,7 @@
 [project]
 name = "bytx"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local Bangla YouTube transcription and searchable knowledge store (faster-whisper + Ollama)"
 readme = "README.md"
 authors = [
     { name = "cmops-10ms", email = "cm.ops.10ms@gmail.com" }
@@ -37,6 +37,12 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.8",
 ]
+
+[tool.pytest.ini_options]
+# Without this, pytest's default collection walks the whole project tree,
+# including tools/uv-cache (project-local uv cache -- see env.ps1), which
+# contains unrelated third-party test files from cached wheels.
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
