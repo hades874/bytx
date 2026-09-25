@@ -5,23 +5,45 @@ Handles a known quirk on some GTX 16xx cards where fp16 CUDA kernels
 silently produce empty/garbage output: on load we run a 1-second silence
 smoke test and fall back down a compute_type chain (and finally to CPU)
 if it fails, rather than failing the whole run.
+
+Whisper stops generating after 224 tokens per decode window, and Bengali
+needs ~0.7 tokens per character, so a 30 s window overflows and its text is
+silently cut off mid-sentence. To avoid that, audio is split at VAD pauses
+into short clips (`asr.max_clip_seconds`), each decoded on its own, and any
+clip whose output still nears the token limit is split again and re-decoded.
 """
 
 from __future__ import annotations
 
 import gc
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 from faster_whisper import WhisperModel
+from faster_whisper.audio import decode_audio
+from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 from . import store
 from .config import AsrConfig, AsrModelConfig
 from .cuda_dll import ensure_cuda_dll_paths
 
 logger = logging.getLogger(__name__)
+
+SAMPLE_RATE = 16000
+
+# Whisper decodes at most 224 tokens per window (half its 448 context). A clip
+# whose text comes within TOKEN_MARGIN of that was almost certainly cut off.
+WHISPER_TOKEN_LIMIT = 224
+TOKEN_MARGIN = 8
+# Clips shorter than 2x this are never split further.
+MIN_CLIP_S = 1.5
+# VAD padding can push a lone clip slightly past max_clip_seconds; only clips
+# beyond this multiple of it are force-split before decoding.
+_MAX_CLIP_SLACK = 1.25
+# Rough tokens-per-character for Bengali, used only if the model exposes no tokenizer.
+_FALLBACK_TOKENS_PER_CHAR = 0.75
 
 # Compute types to try, in order, per device, after the configured one fails.
 _FALLBACK_CHAIN: dict[str, list[str]] = {
@@ -64,12 +86,72 @@ def collapse_repeated_ngrams(text: str, max_repeats: int = 3) -> str:
     return " ".join(out)
 
 
+def plan_clips(
+    chunks: list[dict], max_clip_s: float, sample_rate: int = SAMPLE_RATE
+) -> list[tuple[int, int]]:
+    """Greedily merges adjacent VAD speech chunks (dicts with sample-index
+    "start"/"end") into clips of at most `max_clip_s` seconds. A clip spans
+    from its first chunk's start to its last chunk's end, so the silence
+    between merged chunks is kept and timestamps stay real. A single chunk
+    already longer than the limit becomes its own clip.
+    """
+    max_samples = int(max_clip_s * sample_rate)
+    clips: list[tuple[int, int]] = []
+    cur_start: int | None = None
+    cur_end = 0
+    for chunk in chunks:
+        start, end = int(chunk["start"]), int(chunk["end"])
+        if cur_start is not None and end - cur_start <= max_samples:
+            cur_end = end
+            continue
+        if cur_start is not None:
+            clips.append((cur_start, cur_end))
+        cur_start, cur_end = start, end
+    if cur_start is not None:
+        clips.append((cur_start, cur_end))
+    return clips
+
+
+def find_split_point(
+    audio: np.ndarray, sample_rate: int = SAMPLE_RATE, frame_ms: int = 100
+) -> int:
+    """Returns the sample index of the quietest `frame_ms` frame within the
+    middle 40-60% of `audio` -- the least damaging place to cut a clip in two.
+    """
+    n = len(audio)
+    frame = max(1, sample_rate * frame_ms // 1000)
+    lo, hi = int(n * 0.4), int(n * 0.6)
+    best_idx, best_key = n // 2, (float("inf"), 0)
+    for i in range(lo, max(lo + 1, hi - frame + 1), frame):
+        window = audio[i : i + frame]
+        if len(window) == 0:
+            break
+        idx = i + len(window) // 2
+        rms = float(np.sqrt(np.mean(np.square(window, dtype=np.float64))))
+        key = (rms, abs(idx - n // 2))  # ties (e.g. uniform audio) prefer the centre
+        if key < best_key:
+            best_idx, best_key = idx, key
+    return best_idx
+
+
+@dataclass
+class TranscribeStats:
+    """Diagnostics from one transcription run, used to flag suspect output."""
+
+    clips: int = 0
+    resplit: int = 0  # clips split and re-decoded because they hit the token limit
+    truncated_unresolved: int = 0  # clips still at the limit at minimum size
+    speech_seconds: float = 0.0
+    audio_seconds: float = 0.0
+
+
 @dataclass
 class TranscribeResult:
     segments: list[store.Segment]
     device: str
     compute_type: str
     language: str | None
+    stats: TranscribeStats = field(default_factory=TranscribeStats)
 
 
 class ModelLoadError(RuntimeError):
@@ -156,39 +238,100 @@ class Transcriber:
         self._load()
         assert self._model is not None
 
-        vad_parameters = (
-            {"min_silence_duration_ms": self.asr_cfg.vad_min_silence_ms}
-            if self.asr_cfg.vad_filter
-            else None
+        audio = decode_audio(str(audio_path), sampling_rate=SAMPLE_RATE)
+        max_clip_s = self.asr_cfg.max_clip_seconds
+        if self.asr_cfg.vad_filter:
+            chunks = get_speech_timestamps(
+                audio,
+                VadOptions(
+                    threshold=self.asr_cfg.vad_threshold,
+                    min_silence_duration_ms=self.asr_cfg.vad_min_silence_ms,
+                    max_speech_duration_s=max_clip_s,
+                    speech_pad_ms=self.asr_cfg.vad_speech_pad_ms,
+                ),
+            )
+        else:
+            chunks = [{"start": 0, "end": len(audio)}] if len(audio) else []
+        clips = plan_clips(chunks, max_clip_s)
+
+        stats = TranscribeStats(
+            clips=len(clips),
+            speech_seconds=sum(e - s for s, e in clips) / SAMPLE_RATE,
+            audio_seconds=len(audio) / SAMPLE_RATE,
         )
-        segments_iter, info = self._model.transcribe(
-            str(audio_path),
+        pieces: list[tuple[int, int, str]] = []
+        for start, end in clips:
+            self._decode_range(audio, start, end, stats, pieces)
+
+        segments = [
+            store.Segment(idx=i, start_s=s / SAMPLE_RATE, end_s=e / SAMPLE_RATE, text=text)
+            for i, (s, e, text) in enumerate(pieces)
+        ]
+        return TranscribeResult(
+            segments=segments,
+            device=self._device,  # type: ignore[arg-type]
+            compute_type=self._compute_type,  # type: ignore[arg-type]
+            language=self.model_cfg.language,
+            stats=stats,
+        )
+
+    def _decode_range(
+        self,
+        audio: np.ndarray,
+        start: int,
+        end: int,
+        stats: TranscribeStats,
+        out: list[tuple[int, int, str]],
+    ) -> None:
+        """Decodes audio[start:end] into `out` as (start, end, text) pieces, in
+        time order. Splits the range in two (at its quietest point) when it is
+        too long, or when the decoded text nears Whisper's token limit and so
+        was probably cut off.
+        """
+        duration_s = (end - start) / SAMPLE_RATE
+        can_split = duration_s >= 2 * MIN_CLIP_S
+
+        if can_split and duration_s > self.asr_cfg.max_clip_seconds * _MAX_CLIP_SLACK:
+            mid = start + find_split_point(audio[start:end])
+            self._decode_range(audio, start, mid, stats, out)
+            self._decode_range(audio, mid, end, stats, out)
+            return
+
+        text = self._decode_clip(audio[start:end])
+        if text and self._nears_token_limit(text):
+            if can_split:
+                stats.resplit += 1
+                mid = start + find_split_point(audio[start:end])
+                self._decode_range(audio, start, mid, stats, out)
+                self._decode_range(audio, mid, end, stats, out)
+                return
+            stats.truncated_unresolved += 1
+        if text:
+            out.append((start, end, text))
+
+    def _decode_clip(self, clip: np.ndarray) -> str:
+        assert self._model is not None
+        segments_iter, _info = self._model.transcribe(
+            clip,
             language=self.model_cfg.language,
             beam_size=self.asr_cfg.beam_size,
-            vad_filter=self.asr_cfg.vad_filter,
-            vad_parameters=vad_parameters,
+            vad_filter=False,
             without_timestamps=self.asr_cfg.without_timestamps,
             condition_on_previous_text=self.asr_cfg.condition_on_previous_text,
             repetition_penalty=self.asr_cfg.repetition_penalty,
             no_repeat_ngram_size=self.asr_cfg.no_repeat_ngram_size,
             initial_prompt=self.asr_cfg.initial_prompt or None,
         )
+        text = " ".join(seg.text.strip() for seg in segments_iter).strip()
+        return collapse_repeated_ngrams(text)
 
-        segments: list[store.Segment] = []
-        idx = 0
-        for seg in segments_iter:
-            text = collapse_repeated_ngrams(seg.text.strip())
-            if not text:
-                continue
-            segments.append(store.Segment(idx=idx, start_s=seg.start, end_s=seg.end, text=text))
-            idx += 1
-
-        return TranscribeResult(
-            segments=segments,
-            device=self._device,  # type: ignore[arg-type]
-            compute_type=self._compute_type,  # type: ignore[arg-type]
-            language=info.language,
-        )
+    def _nears_token_limit(self, text: str) -> bool:
+        tokenizer = getattr(self._model, "hf_tokenizer", None)
+        if tokenizer is not None:
+            n_tokens = len(tokenizer.encode(text, add_special_tokens=False).ids)
+        else:
+            n_tokens = int(len(text) * _FALLBACK_TOKENS_PER_CHAR)
+        return n_tokens >= WHISPER_TOKEN_LIMIT - TOKEN_MARGIN
 
     def unload(self) -> None:
         self._model = None

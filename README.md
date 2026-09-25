@@ -17,7 +17,12 @@ summarization/Q&A run on your own [Ollama][ollama] install.
 2. **Store** — everything lands in one SQLite database (`data/library.db`)
    plus a readable folder per video (`data/videos/<id>/`) with
    `transcript.txt` / `.srt` / `.vtt` / `.json`, `info.json`, and
-   `summary.md`.
+   `summary.md`. A second, human-browsable copy of each plain-text
+   transcript also lands in the git-tracked `yt-transcribed-files/` folder
+   (one subfolder per video, named `<channel> - <title>`), and every
+   completed video is recorded in the git-tracked `TRANSCRIBED_LEDGER.md`
+   so a video is never silently re-transcribed, even if the gitignored
+   `data/` folder is deleted or the repo is cloned fresh.
 3. **Search** — keyword search (`bytx search`) matches word *parts*, so a
    search for a root word also finds it with Bangla suffixes attached (e.g.
    বাংলাদেশ finds বাংলাদেশের). `--semantic` searches by meaning instead,
@@ -31,7 +36,7 @@ summarization/Q&A run on your own [Ollama][ollama] install.
 ## Requirements
 
 - Windows with an NVIDIA GPU (CPU-only also works, just slower) — this
-  project was built and tested on a GTX 1650 (4GB VRAM).
+  project runs on an RTX 4070 (12GB VRAM).
 - [Ollama](https://ollama.com) installed and running.
 - [uv](https://docs.astral.sh/uv/) for Python package management.
 - ffmpeg and [Deno](https://deno.com) (yt-dlp needs a JS runtime for
@@ -98,6 +103,41 @@ use, VAD/decoding parameters, which Ollama models to use for embeddings and
 chat, chunk sizes for retrieval, and yt-dlp options (cookies, sleep
 intervals). See the comments in that file.
 
+### How audio is cut into segments
+
+Whisper stops generating after **224 tokens per 30 s window**, and Bengali
+needs about 0.7 tokens per character. A fast or dense 30 s window therefore
+overflows: the text is cut off mid-sentence (sometimes mid-word) and the rest
+of that window is silently lost. Early transcripts were affected (94% of
+segments sat exactly at the cap; on one fast speaker ~40% of the words were
+missing).
+
+To avoid this, `Transcriber.transcribe()` does its own segmentation instead of
+handing the whole file to faster-whisper:
+
+1. Silero VAD finds speech, and adjacent speech is merged into clips of at most
+   `asr.max_clip_seconds` (12 s) at natural pauses.
+2. Each clip is decoded separately, so every segment is one phrase-sized clip
+   with real start/end times.
+3. Any clip whose text comes within 8 tokens of the limit is split at its
+   quietest point and re-decoded. Clips that still hit the limit at minimum
+   size are counted in `TranscribeResult.stats.truncated_unresolved`.
+
+`bytx run` logs a warning when clips are still truncated, or when less than
+75% of a video was detected as speech (a lot of music/silence, or a too-high
+`asr.vad_threshold`). `bytx bench` prints the clip/re-split counts too.
+Transcripts made before this change are not regenerated.
+
+### Known limitations of the transcripts
+
+These come from the ASR model, not the segmentation:
+
+- Numbers are written as spoken words ("দুই হাজার সাতাইশ"), not digits.
+- English words are transliterated into Bengali script and are often
+  misheard ("এস অপি" for SOP, "স্টোর" for story).
+- No punctuation; segment breaks are speech pauses, not sentences.
+- Music/outro sections that slip past VAD can produce nonsense text.
+
 ### Choosing an ASR model
 
 Two models are pre-configured:
@@ -117,58 +157,35 @@ uv run bytx bench "<url>" --clip 01:00-03:00 --models tugstugi-medium-bn,large-v
 With a reference transcript (`--ref reference.txt`), `bench` also reports
 WER/CER.
 
-### A note on speed (GTX 1650 / similar low-end GPUs)
+### A note on speed (RTX 4070)
 
-GTX 16xx-series cards do **not** have Tensor Cores (unlike RTX cards), so
-fp16 doesn't get the usual speedup on them, and `beam_size` directly
-multiplies decoding cost — this is not the "4x faster than real-time"
-faster-whisper is often known for on cards with Tensor Cores. Measured on a
-GTX 1650 with whisper-medium (tugstugi-medium-bn, fp16):
+This project runs on an **RTX 4070** (Tensor Cores, 12GB VRAM). `bytx doctor`
+reports `device=cuda compute_type=float16`. During a batch run the GPU sits
+at roughly 40% utilization with ~3GB VRAM used by the medium model
+(tugstugi-medium-bn, fp16), since download, VAD and CPU-side decoding leave
+the GPU idle part of the time. No real-time factor (RTF, time / audio
+duration) has been measured on this card yet; use `bytx bench` to measure it
+rather than assuming a number.
 
-| Setting | RTF (time / audio duration) |
-|---|---|
-| `beam_size=1`, default `repetition_penalty`/`no_repeat_ngram_size` off | **~0.9** (roughly real-time) |
-| `beam_size=5` | 5-10x+ slower |
-| `beam_size=1` **with** `repetition_penalty≠1.0` or `no_repeat_ngram_size≠0` | 5-10x+ slower |
+Two settings affect decoding speed:
 
-The last row is a real faster-whisper/CTranslate2 quirk: those two options
-force a much slower per-token CPU↔GPU score-adjustment path. `config.toml`
-ships with them off by default and relies on
-`transcribe.collapse_repeated_ngrams()` (a cheap post-processing pass) to
-clean up hallucinated repeats instead. **Don't re-enable them without
-re-checking speed.**
+- `beam_size` directly multiplies decoding cost. `config.toml` ships with
+  `beam_size=1`; raise it only if you want the accuracy gain and don't mind a
+  slower batch run.
+- `repetition_penalty≠1.0` or `no_repeat_ngram_size≠0` is a real
+  faster-whisper/CTranslate2 quirk: those two options force a much slower
+  per-token CPU↔GPU score-adjustment path. `config.toml` ships with them off
+  and relies on `transcribe.collapse_repeated_ngrams()` (a cheap
+  post-processing pass) to clean up hallucinated repeats instead. **Don't
+  re-enable them without re-checking speed.**
 
-**Open caveat, tested and not yet fully explained:** the ~0.9 RTF above was
-measured on a short (15s), single-VAD-segment clip. On a full ~5-minute
-real video with the shipped defaults, a run took well over 30 minutes
-(RTF > 9), even though nothing else changed. The GPU was confirmed
-genuinely busy throughout (97-99% via `nvidia-smi`), not hung. The most
-likely explanation is that Whisper internally processes audio in fixed
-30-second windows regardless of VAD segment length, and cost may not scale
-as linearly with segment count/length on this GPU as the short-clip number
-suggests -- but this wasn't conclusively isolated. **Practical takeaway:**
-on a GTX 1650 (or similar Tensor-Core-less card), budget for a full video
-to take substantially longer than its own duration -- possibly 5-10x+, not
-the ~1x the short-clip test would suggest. Treat `bytx run` as a
-batch/overnight job. If this matters to you, worth trying before assuming
-it's fixed:
-- A smaller model (e.g. convert and `bench` against Whisper-small) --
-  untested here, but the encoder pass is the likely fixed cost, and
-  whisper-medium's encoder is meaningfully heavier than small's.
-- `device = "cpu"` in `config.toml`, in case CPU multi-threading actually
-  beats this particular GPU for this model -- untested here.
-- Filing/searching a faster-whisper issue with a real long recording, since
-  this may be a known scaling characteristic rather than something
-  specific to this setup.
+Treat `bytx run` as a batch job. If speed matters, options to try:
+- A smaller model (e.g. convert and `bench` against Whisper-small).
+- `device = "cpu"` in `config.toml` (untested here, unlikely to beat the GPU).
 
-Practical guidance:
-- The shipped defaults (`beam_size=1`, penalties off) give roughly
-  real-time transcription on a GTX 1650. Raise `beam_size` only if you
-  have a Tensor-Core GPU (RTX-series) or don't mind a much longer batch
-  run for the accuracy gain.
-- `bytx doctor` reports the actual device/compute_type in use, and
-  `Transcriber` automatically falls back (fp16 → int8_float16 → int8 →
-  CPU) if a compute_type doesn't work at all on your card.
+`bytx doctor` reports the actual device/compute_type in use, and
+`Transcriber` automatically falls back (fp16 → int8_float16 → int8 → CPU) if
+a compute_type doesn't work at all on your card.
 
 ## Project layout
 
@@ -180,6 +197,7 @@ src/bytx/
   transcribe.py   faster-whisper wrapper (VAD, fallback chain, anti-hallucination)
   store.py        SQLite schema + FTS5 (trigram) search
   export.py       txt/srt/vtt/json writers
+  ledger.py       durable, git-tracked markdown record of transcribed video ids
   pipeline.py     staged, resumable runner (transcribe -> index -> summarize)
   llm.py          minimal Ollama HTTP client
   rag.py          chunking, embeddings, semantic search, ask
@@ -189,7 +207,26 @@ src/bytx/
 scripts/
   convert_model.py   HF Whisper -> CTranslate2 conversion
 tests/               offline pytest suite (no GPU/network required)
+TRANSCRIBED_LEDGER.md   git-tracked list of transcribed video ids (see below)
+yt-transcribed-files/   git-tracked "<channel> - <title>" transcript folders
 ```
+
+### Transcribed-video ledger and human-facing output
+
+`data/` (SQLite DB + per-id export folders) is gitignored, so on its own it
+can't tell a fresh clone, or a wiped `data/`, that a video has already been
+transcribed. Two things fix that:
+
+- **`TRANSCRIBED_LEDGER.md`** — a plain, append-only markdown record (video
+  id, channel, title, url, date) written after every successful
+  transcription. `bytx add` checks it alongside the DB, so a known video id
+  is never silently re-queued.
+- **`yt-transcribed-files/<channel> - <title>/transcript.txt`** — a
+  human-browsable, git-tracked copy of the plain-text transcript, separate
+  from the DB-linked `data/videos/<id>/` export.
+
+To force a video to be re-transcribed, remove its entry from
+`TRANSCRIBED_LEDGER.md` (and its row from `data/library.db`, if present).
 
 ## Known Windows quirk (already handled)
 

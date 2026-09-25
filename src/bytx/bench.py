@@ -103,6 +103,11 @@ def _bench_one_model(
 
     console.print(f"\n[bold]{key}[/bold]  device={result.device} compute_type={result.compute_type}")
     console.print(f"  time: {elapsed:.1f}s for {duration:.1f}s audio  (RTF: {rtf:.2f})")
+    st = result.stats
+    console.print(
+        f"  clips: {st.clips}  resplit (hit token limit): {st.resplit}  "
+        f"still truncated: {st.truncated_unresolved}"
+    )
     if reference is not None:
         import jiwer
 

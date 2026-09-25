@@ -139,3 +139,84 @@ def test_write_summary_md_falls_back_to_id_when_no_title(tmp_path):
     path = export.write_summary_md(tmp_path, video, "সারাংশ")
     content = path.read_text(encoding="utf-8")
     assert content.startswith("# abc123")
+
+
+# --- sanitize_folder_name ---------------------------------------------------
+
+def test_sanitize_folder_name_basic():
+    assert export.sanitize_folder_name("Some Channel", "Some Title", "abc123") == "Some Channel - Some Title"
+
+
+def test_sanitize_folder_name_replaces_illegal_chars():
+    name = export.sanitize_folder_name('Chan<>:"/\\|?*Name', "Ti|tle?", "abc123")
+    for ch in '<>:"/\\|?*':
+        assert ch not in name
+
+
+def test_sanitize_folder_name_strips_trailing_dots_and_spaces():
+    name = export.sanitize_folder_name("Channel. ", " Title...", "abc123")
+    assert not name.endswith(".")
+    assert not name.endswith(" ")
+
+
+def test_sanitize_folder_name_truncates_long_combined_name():
+    name = export.sanitize_folder_name("C" * 100, "T" * 200, "abc123")
+    assert len(name) <= 150
+    assert not name.endswith(".")
+    assert not name.endswith(" ")
+
+
+def test_sanitize_folder_name_falls_back_to_video_id_when_empty():
+    assert export.sanitize_folder_name("", "", "abc123") == "abc123 - abc123"
+    assert export.sanitize_folder_name(None, None, "abc123") == "abc123 - abc123"
+    assert export.sanitize_folder_name("...", "***", "abc123") == "abc123 - abc123"
+
+
+# --- write_transcript_copy ---------------------------------------------------
+
+def test_write_transcript_copy_writes_plain_text_only(tmp_path):
+    video = make_video()
+    segs = make_segments()
+    out_dir = export.write_transcript_copy(tmp_path, video, segs)
+
+    assert out_dir == tmp_path / "Test Channel - বাংলা লেকচার"
+    assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == export.to_txt(segs)
+    assert (out_dir / ".video_id").read_text(encoding="utf-8") == "abc123"
+    assert not (out_dir / "transcript.srt").exists()
+    assert not (out_dir / "transcript.json").exists()
+
+
+def test_write_transcript_copy_rerun_same_video_overwrites_in_place(tmp_path):
+    video = make_video()
+    export.write_transcript_copy(tmp_path, video, make_segments())
+    out_dir = export.write_transcript_copy(tmp_path, video, [store.Segment(idx=0, start_s=0, end_s=1, text="নতুন")])
+
+    assert out_dir == tmp_path / "Test Channel - বাংলা লেকচার"
+    assert set(p.name for p in tmp_path.iterdir()) == {"Test Channel - বাংলা লেকচার"}
+    assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == "নতুন\n"
+
+
+def test_write_transcript_copy_collision_appends_video_id(tmp_path):
+    video_a = make_video(id="abc123")
+    video_b = make_video(id="xyz789")
+    dir_a = export.write_transcript_copy(tmp_path, video_a, make_segments())
+    dir_b = export.write_transcript_copy(tmp_path, video_b, make_segments())
+
+    assert dir_a != dir_b
+    assert dir_a == tmp_path / "Test Channel - বাংলা লেকচার"
+    assert dir_b == tmp_path / "Test Channel - বাংলা লেকচার (xyz789)"
+
+
+def test_write_transcript_copy_title_change_reuses_original_folder(tmp_path):
+    original = export.write_transcript_copy(tmp_path, make_video(), make_segments())
+    renamed = export.write_transcript_copy(tmp_path, make_video(title="নতুন শিরোনাম"), make_segments())
+
+    assert renamed == original
+    assert len([p for p in tmp_path.iterdir() if p.is_dir()]) == 1
+
+
+def test_write_transcript_copy_ignores_folders_without_marker(tmp_path):
+    (tmp_path / "unrelated").mkdir()
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments())
+
+    assert out_dir == tmp_path / "Test Channel - বাংলা লেকচার"

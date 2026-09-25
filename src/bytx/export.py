@@ -5,10 +5,15 @@ files on disk, one set per video under data/videos/<id>/.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import store
+
+_ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WHITESPACE_RE = re.compile(r"\s+")
+_MAX_FOLDER_NAME_LEN = 150
 
 
 def _srt_timestamp(seconds: float) -> str:
@@ -156,3 +161,61 @@ def write_summary_md(videos_root: Path, video: store.Video, summary: str) -> Pat
     content = f"# {title}\n\n{video.url}\n\n{summary}\n"
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _clean_component(value: str) -> str:
+    cleaned = _ILLEGAL_CHARS_RE.sub(" ", value)
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned.rstrip(". ")
+
+
+def sanitize_folder_name(channel: str | None, title: str | None, video_id: str) -> str:
+    """Builds a filesystem-safe "<channel> - <title>" folder name.
+
+    Falls back to video_id for either component if it's missing or becomes
+    empty after cleaning. The combined name is truncated (not per-field, so
+    a long title doesn't starve the channel name) to leave headroom under
+    Windows' 260-char MAX_PATH given yt-transcribed-files/<name>/transcript.txt.
+    """
+    clean_channel = _clean_component(channel) if channel else ""
+    clean_title = _clean_component(title) if title else ""
+    clean_channel = clean_channel or video_id
+    clean_title = clean_title or video_id
+
+    combined = f"{clean_channel} - {clean_title}"
+    if len(combined) > _MAX_FOLDER_NAME_LEN:
+        combined = combined[:_MAX_FOLDER_NAME_LEN].rstrip(". ")
+    return combined
+
+
+def _find_existing_folder(root: Path, video_id: str) -> Path | None:
+    for child in root.iterdir():
+        marker = child / ".video_id"
+        if child.is_dir() and marker.is_file() and marker.read_text(encoding="utf-8").strip() == video_id:
+            return child
+    return None
+
+
+def write_transcript_copy(
+    root: Path, video: store.Video, segments: Sequence[store.Segment]
+) -> Path:
+    """Writes a human-facing plain-text transcript copy under
+    root/"<channel> - <title>"/transcript.txt, alongside a hidden
+    .video_id marker used to tell an idempotent re-run of the same video
+    (overwrite in place) apart from a genuine folder-name collision between
+    two different videos (which gets a " (<video_id>)" suffix instead).
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    # Reuse this video's folder even if its title/channel changed since the
+    # last run, so a rename upstream doesn't leave an orphaned copy behind.
+    out_dir = _find_existing_folder(root, video.id)
+    if out_dir is None:
+        name = sanitize_folder_name(video.channel, video.title, video.id)
+        out_dir = root / name
+        if out_dir.exists():
+            out_dir = root / f"{name} ({video.id})"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "transcript.txt").write_text(to_txt(segments), encoding="utf-8")
+    (out_dir / ".video_id").write_text(video.id, encoding="utf-8")
+    return out_dir

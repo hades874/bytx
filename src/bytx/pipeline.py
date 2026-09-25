@@ -15,10 +15,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from . import export, fetch, rag, store, summarize
+from . import export, fetch, ledger, rag, store, summarize
 from .config import Config
 from .llm import OllamaClient
-from .transcribe import Transcriber
+from .transcribe import Transcriber, TranscribeStats
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +36,38 @@ def add_targets(conn, cfg: Config, targets: list[str]) -> list[str]:
     video URLs and inserts new queued rows. Already-known video ids are
     skipped. Returns the list of newly queued video ids.
     """
+    seen_ids = ledger.load_seen_ids(ledger.ledger_path(cfg))
     new_ids: list[str] = []
     for target in targets:
         for url in fetch.expand_to_video_urls(target, cfg):
             vid = fetch.extract_video_id(url) or url
-            if store.video_exists(conn, vid):
+            if store.video_exists(conn, vid) or vid in seen_ids:
                 continue
             store.upsert_video(conn, store.Video(id=vid, url=url, status="queued"))
             new_ids.append(vid)
     return new_ids
+
+
+# Below this fraction of the video's duration detected as speech, VAD has
+# probably dropped real speech (or the video is mostly music/silence).
+_MIN_SPEECH_COVERAGE = 0.75
+
+
+def _warn_on_suspect_asr(info: fetch.VideoInfo, stats: TranscribeStats) -> None:
+    """Logs (never fails) when ASR output looks incomplete."""
+    if stats.truncated_unresolved:
+        logger.warning(
+            "%s: %d clip(s) still hit Whisper's token limit after splitting; "
+            "their text is probably cut off (try a lower asr.max_clip_seconds)",
+            info.id, stats.truncated_unresolved,
+        )
+    if info.duration and stats.speech_seconds / info.duration < _MIN_SPEECH_COVERAGE:
+        logger.warning(
+            "%s: only %.0f%% of the video (%.0fs of %.0fs) was detected as speech; "
+            "some speech may have been skipped (try a lower asr.vad_threshold)",
+            info.id, 100 * stats.speech_seconds / info.duration,
+            stats.speech_seconds, info.duration,
+        )
 
 
 def transcribe_one(conn, cfg: Config, transcriber: Transcriber, video: store.Video) -> None:
@@ -75,6 +98,7 @@ def transcribe_one(conn, cfg: Config, transcriber: Transcriber, video: store.Vid
         try:
             result = transcriber.transcribe(audio_path)
             segments = result.segments
+            _warn_on_suspect_asr(info, result.stats)
         finally:
             audio_path.unlink(missing_ok=True)
         source, asr_model = "asr", cfg.asr.model
@@ -86,6 +110,17 @@ def transcribe_one(conn, cfg: Config, transcriber: Transcriber, video: store.Vid
     export.write_info_json(cfg.paths.videos_dir, updated)
     export.write_all(cfg.paths.videos_dir, updated, segments)
     store.set_video_status(conn, info.id, "transcribed")
+
+    # Best-effort extras: the transcript is already safe in the DB, so a
+    # locked file or over-long path here must not mark the video failed.
+    try:
+        export.write_transcript_copy(cfg.paths.transcribed_files_dir, updated, segments)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not write transcript copy for %s", info.id, exc_info=True)
+    try:
+        ledger.append_entry(ledger.ledger_path(cfg), updated)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not update transcription ledger for %s", info.id, exc_info=True)
 
 
 def index_one(conn, cfg: Config, client: OllamaClient, video: store.Video) -> None:
@@ -157,7 +192,15 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
 
 
 def retry_failed(conn) -> int:
+    """Requeues failed videos at the earliest stage that still has work to
+    do, so finished stages (e.g. expensive ASR) are not repeated."""
     failed = store.list_videos(conn, status="failed")
     for v in failed:
-        store.set_video_status(conn, v.id, "queued", error=None)
+        if store.get_chunks(conn, v.id):
+            status = "indexed"
+        elif store.get_segments(conn, v.id):
+            status = "transcribed"
+        else:
+            status = "queued"
+        store.set_video_status(conn, v.id, status, error=None)
     return len(failed)

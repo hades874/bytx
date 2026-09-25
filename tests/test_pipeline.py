@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bytx import fetch, pipeline, store
+from bytx import fetch, ledger, pipeline, store
 from bytx.config import (
     AsrConfig,
     AsrModelConfig,
@@ -16,7 +16,7 @@ from bytx.config import (
     RagConfig,
     SummarizeConfig,
 )
-from bytx.transcribe import TranscribeResult
+from bytx.transcribe import TranscribeResult, TranscribeStats
 
 
 @pytest.fixture()
@@ -32,7 +32,11 @@ def conn():
 def make_config(tmp_path: Path, *, summarize_enabled: bool = True) -> Config:
     return Config(
         root=tmp_path,
-        paths=PathsConfig(data_dir=tmp_path / "data", models_dir=tmp_path / "models"),
+        paths=PathsConfig(
+            data_dir=tmp_path / "data",
+            models_dir=tmp_path / "models",
+            transcribed_files_dir=tmp_path / "yt-transcribed-files",
+        ),
         asr=AsrConfig(
             model="m", device="auto", compute_type="float16", beam_size=1,
             vad_filter=False, vad_min_silence_ms=500, without_timestamps=True, condition_on_previous_text=False,
@@ -68,7 +72,10 @@ class FakeTranscriber:
         segs = _TRANSCRIBE_RESULTS.get(
             audio_path.stem, [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="default text")]
         )
-        return TranscribeResult(segments=segs, device="cuda", compute_type="float16", language="bn")
+        return TranscribeResult(
+            segments=segs, device="cuda", compute_type="float16", language="bn",
+            stats=_TRANSCRIBE_STATS.get(audio_path.stem, TranscribeStats(speech_seconds=60.0)),
+        )
 
     def unload(self) -> None:
         self.unloaded = True
@@ -76,6 +83,7 @@ class FakeTranscriber:
 
 _TRANSCRIBE_RESULTS: dict[str, list[store.Segment]] = {}
 _TRANSCRIBE_FAILURES: dict[str, str] = {}
+_TRANSCRIBE_STATS: dict[str, TranscribeStats] = {}
 
 
 class FakeOllamaClient:
@@ -107,6 +115,7 @@ def _reset_fakes(monkeypatch):
     FakeOllamaClient.instances = []
     _TRANSCRIBE_RESULTS.clear()
     _TRANSCRIBE_FAILURES.clear()
+    _TRANSCRIBE_STATS.clear()
     monkeypatch.setattr(pipeline, "Transcriber", FakeTranscriber)
     monkeypatch.setattr(pipeline, "OllamaClient", FakeOllamaClient)
     yield
@@ -177,7 +186,62 @@ def test_add_targets_skips_already_known_ids(conn, tmp_path, monkeypatch):
     assert store.get_video(conn, "aaaaaaaaaaa").status == "transcribed"
 
 
+def test_add_targets_skips_ids_only_in_ledger_when_db_empty(conn, tmp_path, monkeypatch):
+    """Recovery scenario: data/ (and its SQLite DB) was wiped or this is a
+    fresh clone, but TRANSCRIBED_LEDGER.md survived (it's git-tracked)."""
+    cfg = make_config(tmp_path)
+    ledger.append_entry(
+        ledger.ledger_path(cfg),
+        store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), channel="C", title="T"),
+    )
+    urls = [video_url("aaaaaaaaaaa"), video_url("bbbbbbbbbbb")]
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: urls)
+
+    new_ids = pipeline.add_targets(conn, cfg, ["some target"])
+    assert new_ids == ["bbbbbbbbbbb"]
+    assert store.get_video(conn, "aaaaaaaaaaa") is None
+
+
 # --- transcribe_one -----------------------------------------------------------
+
+def test_transcribe_one_warns_when_clips_still_truncated(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    vid = "bbbbbbbbbbb"
+    patch_fetch(monkeypatch, tmp_path)
+    _TRANSCRIBE_STATS[vid] = TranscribeStats(truncated_unresolved=2, speech_seconds=60.0)
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+
+    with caplog.at_level("WARNING", logger="bytx.pipeline"):
+        pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+
+    assert "token limit" in caplog.text
+    assert store.get_video(conn, vid).status == "transcribed"  # a warning, not a failure
+
+
+def test_transcribe_one_warns_when_little_speech_detected(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    vid = "ccccccccccc"
+    patch_fetch(monkeypatch, tmp_path)  # fake video duration is 60s
+    _TRANSCRIBE_STATS[vid] = TranscribeStats(speech_seconds=30.0)
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+
+    with caplog.at_level("WARNING", logger="bytx.pipeline"):
+        pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+
+    assert "detected as speech" in caplog.text
+
+
+def test_transcribe_one_no_warning_for_healthy_asr(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    vid = "ddddddddddd"
+    patch_fetch(monkeypatch, tmp_path)
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+
+    with caplog.at_level("WARNING", logger="bytx.pipeline"):
+        pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+
+    assert caplog.text == ""
+
 
 def test_transcribe_one_prefers_human_subs(conn, tmp_path, monkeypatch):
     cfg = make_config(tmp_path)
@@ -201,6 +265,26 @@ def test_transcribe_one_prefers_human_subs(conn, tmp_path, monkeypatch):
     out_dir = cfg.paths.videos_dir / vid
     assert (out_dir / "transcript.txt").exists()
     assert (out_dir / "info.json").exists()
+
+
+def test_transcribe_one_writes_human_facing_copy_and_ledger_entry(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    subs = [store.Segment(idx=0, start_s=0.0, end_s=2.0, text="মানুষের সাবটাইটেল")]
+    patch_fetch(monkeypatch, tmp_path, human_subs={vid: subs})
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+    video = store.get_video(conn, vid)
+
+    transcriber = FakeTranscriber(None, None, None)
+    pipeline.transcribe_one(conn, cfg, transcriber, video)
+
+    out_dir = cfg.paths.transcribed_files_dir / f"Chan - Title {vid}"
+    transcript = out_dir / "transcript.txt"
+    assert transcript.exists()
+    assert transcript.read_text(encoding="utf-8") == "মানুষের সাবটাইটেল\n"
+
+    ledger_content = ledger.ledger_path(cfg).read_text(encoding="utf-8")
+    assert f"- id: {vid}" in ledger_content
 
 
 def test_transcribe_one_uses_asr_and_deletes_audio(conn, tmp_path, monkeypatch):
@@ -375,3 +459,46 @@ def test_retry_failed_requeues_and_clears_error(conn):
     assert v1.error is None
     assert v1.attempts == 2  # history preserved
     assert store.get_video(conn, "v2").status == "transcribed"  # untouched
+
+
+def _failed_video(conn, vid: str, *, segments: bool = False, chunks: bool = False) -> None:
+    store.upsert_video(conn, store.Video(id=vid, url=f"u-{vid}", status="failed", error="boom"))
+    if segments:
+        store.replace_segments(conn, vid, [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="t")])
+    if chunks:
+        store.replace_chunks(
+            conn, vid,
+            [store.Chunk(id=None, video_id=vid, start_s=0.0, end_s=1.0, text="t",
+                         embedding=store.floats_to_blob([0.1]), embed_model="m")],
+        )
+
+
+def test_retry_failed_resumes_at_earliest_unfinished_stage(conn):
+    _failed_video(conn, "v1")
+    _failed_video(conn, "v2", segments=True)
+    _failed_video(conn, "v3", segments=True, chunks=True)
+
+    assert pipeline.retry_failed(conn) == 3
+
+    assert store.get_video(conn, "v1").status == "queued"
+    assert store.get_video(conn, "v2").status == "transcribed"
+    assert store.get_video(conn, "v3").status == "indexed"
+
+
+@pytest.mark.parametrize("target", ["write_transcript_copy", "append_entry"])
+def test_transcribe_one_extras_failure_does_not_fail_video(conn, tmp_path, monkeypatch, target):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    subs = [store.Segment(idx=0, start_s=0.0, end_s=2.0, text="সাবটাইটেল")]
+    patch_fetch(monkeypatch, tmp_path, human_subs={vid: subs})
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+
+    def boom(*args, **kwargs):
+        raise OSError("locked")
+
+    module = pipeline.export if target == "write_transcript_copy" else pipeline.ledger
+    monkeypatch.setattr(module, target, boom)
+
+    pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+
+    assert store.get_video(conn, vid).status == "transcribed"
