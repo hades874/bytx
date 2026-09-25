@@ -227,7 +227,8 @@ def write_transcript_copy(
     out_dir = _find_existing_folder(root, video.id)
     if out_dir is None:
         date_dir = root / (today or date.today()).isoformat()
-        name = sanitize_folder_name(video.channel, video.title, video.id)
+        title = video.title or store.first_line(video.description)
+        name = sanitize_folder_name(video.channel, title, video.id)
         out_dir = date_dir / name
         if out_dir.exists():
             out_dir = date_dir / f"{name} ({video.id})"

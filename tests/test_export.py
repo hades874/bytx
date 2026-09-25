@@ -284,3 +284,15 @@ def test_transcript_copy_for_an_untitled_facebook_video_is_named_by_its_id(tmp_p
 
     assert out_dir.name == "fb_123456789012345 - fb_123456789012345"
     assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_transcript_copy_names_an_untitled_video_by_its_caption(tmp_path):
+    video = make_video(
+        id="fb_123456789012345", platform="facebook", title=None, channel="Some Page",
+        description="\nক্যাপশনের প্রথম লাইন\nদ্বিতীয় লাইন",
+    )
+    segments = [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="hello")]
+
+    out_dir = export.write_transcript_copy(tmp_path, video, segments, today=date(2026, 1, 2))
+
+    assert out_dir.name == "Some Page - ক্যাপশনের প্রথম লাইন"

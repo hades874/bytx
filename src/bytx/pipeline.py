@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export, fetch, langdetect, ledger, platforms, rag, store, summarize
+from . import export, fetch, langdetect, langs, ledger, platforms, rag, store, summarize
 from .config import Config
 from .llm import OllamaClient
 from .transcribe import TranscriberPool, TranscribeStats
@@ -44,6 +44,29 @@ class RunSummary:
 AUTO = "auto"  # add_targets(language=AUTO): decide each video's language at run time
 
 
+def _identify(url: str, cfg: Config) -> store.Video | None:
+    """The queued row for the video at `url`, or None (after logging why) when
+    it is not a YouTube or Facebook video we can identify."""
+    ref = platforms.parse_video_ref(url)
+    if ref is not None:
+        return store.Video(id=ref.id, url=url, platform=ref.platform)
+    if platforms.platform_of_url(url) is None:
+        logger.warning("Skipping %s: only YouTube and Facebook videos are supported", url)
+        return None
+    # A link with no id of its own (fb.watch/xyz, /share/v/xyz, an odd YouTube URL):
+    # fetch it to learn which video it points to.
+    try:
+        info = fetch.get_video_info(url, cfg)
+    except Exception as exc:  # noqa: BLE001 - yt-dlp raises many kinds of errors
+        logger.warning(
+            "Skipping %s: could not tell which video it points to (%s). If it needs a login, set "
+            "cookies_from_browser under [fetch] in config.toml; otherwise add the full video URL.",
+            url, exc,
+        )
+        return None
+    return store.Video(id=info.id, url=info.url, platform=info.platform)
+
+
 def add_targets(
     conn, cfg: Config, targets: list[str], language: str | None = None
 ) -> list[str]:
@@ -61,26 +84,12 @@ def add_targets(
     new_ids: list[str] = []
     for target in targets:
         for url in fetch.expand_to_video_urls(target, cfg):
-            ref = platforms.parse_video_ref(url)
-            if ref is not None:
-                vid, platform = ref.id, ref.platform
-            elif platforms.platform_of_url(url) is None:
-                logger.warning("Skipping %s: only YouTube and Facebook videos are supported", url)
+            video = _identify(url, cfg)
+            if video is None or store.video_exists(conn, video.id) or video.id in seen_ids:
                 continue
-            else:
-                # A link with no id of its own (fb.watch/xyz, /share/v/xyz): fetch it to learn the video.
-                info = fetch.resolve_opaque_url(url, cfg)
-                if info is None:
-                    logger.warning("Skipping %s: could not tell which video it points to", url)
-                    continue
-                vid, platform, url = info.id, info.platform, info.url
-            if store.video_exists(conn, vid) or vid in seen_ids:
-                continue
-            store.upsert_video(
-                conn,
-                store.Video(id=vid, url=url, status="queued", language=language, platform=platform),
-            )
-            new_ids.append(vid)
+            video.language = language
+            store.upsert_video(conn, video)
+            new_ids.append(video.id)
     return new_ids
 
 
@@ -114,7 +123,7 @@ def detect_one(conn, cfg: Config, pool: TranscriberPool, video: store.Video) -> 
     audio_path = fetch.download_audio(video.url, cfg.paths.audio_dir, cfg)
     try:
         # Always sampled with the Bangla model: what it writes is the signal.
-        text = pool.for_language("bn").sample_text(audio_path, "bn")
+        text = pool.for_language(langs.BANGLA).sample_text(audio_path, langs.BANGLA)
         detection = langdetect.classify(text, cfg.asr.auto_english_below, cfg.asr.default_language)
         if not detection.confident:
             logger.warning(
@@ -234,13 +243,13 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
     if queued:
         pool = TranscriberPool(cfg)
         # Audio downloaded while detecting a language, kept for the transcription.
-        audio: dict[str, Path] = {}
+        detected_audio: dict[str, Path] = {}
 
-        undecided = [v for v in queued if v.language is None]
-        if undecided:
+        language_undecided = [v for v in queued if v.language is None]
+        if language_undecided:
             _run_stage(
-                conn, undecided, "detect language",
-                lambda v: audio.__setitem__(v.id, detect_one(conn, cfg, pool, v)),
+                conn, language_undecided, "detect language",
+                lambda v: detected_audio.__setitem__(v.id, detect_one(conn, cfg, pool, v)),
                 result, "detected",
             )
             queued = [v for v in (store.get_video(conn, v.id) for v in queued) if v and v.status == "queued"]
@@ -251,11 +260,12 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
         try:
             _run_stage(
                 conn, queued, "transcribe",
-                lambda v: transcribe_one(conn, cfg, pool, v, audio_path=audio.get(v.id)),
+                lambda v: transcribe_one(conn, cfg, pool, v, audio_path=detected_audio.get(v.id)),
                 result, "transcribed",
             )
         finally:
-            for path in audio.values():  # transcribe_one deletes its own; this catches early failures
+            # transcribe_one deletes its own audio; this catches early failures
+            for path in detected_audio.values():
                 path.unlink(missing_ok=True)
             pool.unload()
 

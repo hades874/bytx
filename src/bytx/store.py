@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import platforms
+
 SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """
@@ -99,6 +101,15 @@ CREATE TABLE IF NOT EXISTS summaries (
 """
 
 
+def first_line(text: str | None) -> str | None:
+    """The first non-blank line of `text`, stripped; None if there is none.
+    Stands in for a title on videos (Facebook's, mostly) that have none."""
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return None
+
+
 @dataclass
 class Video:
     id: str
@@ -112,7 +123,7 @@ class Video:
     source: str | None = None
     asr_model: str | None = None
     language: str | None = None
-    platform: str = "youtube"
+    platform: str = platforms.YOUTUBE
     status: str = "queued"
     error: str | None = None
     attempts: int = 0
@@ -167,21 +178,23 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
     if from_version < 2:
         # v2 adds videos.language. Before it, bytx only handled Bangla, so every
         # existing row (queued ones included) is Bangla. From now on NULL means
         # "not decided yet" (queued with `--lang auto`), so nothing may stay NULL.
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
-        if "language" not in columns:
-            conn.execute("ALTER TABLE videos ADD COLUMN language TEXT")
+        _add_column_if_missing(conn, "videos", "language", "TEXT")
         conn.execute("UPDATE videos SET language = 'bn' WHERE language IS NULL")
     if from_version < 3:
         # v3 adds videos.platform. Before it, bytx only handled YouTube, so the
         # column's default ('youtube') is right for every existing row.
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
-        if "platform" not in columns:
-            conn.execute("ALTER TABLE videos ADD COLUMN platform TEXT NOT NULL DEFAULT 'youtube'")
+        _add_column_if_missing(conn, "videos", "platform", "TEXT NOT NULL DEFAULT 'youtube'")
 
 
 @contextmanager
@@ -214,6 +227,8 @@ def upsert_video(conn: sqlite3.Connection, video: Video) -> None:
             duration=COALESCE(excluded.duration, videos.duration),
             description=COALESCE(excluded.description, videos.description),
             language=COALESCE(videos.language, excluded.language),
+            -- platform is deliberately not updated: it is fixed when the row is created
+            -- (from the URL), unlike language, which can be filled in later.
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         """,
         vars(video),

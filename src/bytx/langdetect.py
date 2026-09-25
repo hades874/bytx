@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from . import langs
+
 # Frequent Bangla function words: pronouns, particles, conjunctions, the verbs
 # that carry most sentences. Transliterated English seldom produces these.
 BANGLA_FUNCTION_WORDS = frozenset(
@@ -62,11 +64,12 @@ class Detection:
     confident: bool  # False when the sample was too short to decide
 
 
-def classify(text: str, english_below: float, default: str = "bn") -> Detection:
+def classify(text: str, english_below: float, default: str = langs.BANGLA) -> Detection:
     """English when fewer than `english_below` of the sample's words are Bangla
     function words, Bangla otherwise. A sample under MIN_WORDS words is not
     evidence either way and falls back to `default`."""
     rate, words = bangla_word_rate(text)
     if words < MIN_WORDS:
         return Detection(language=default, rate=rate, words=words, confident=False)
-    return Detection(language="en" if rate < english_below else "bn", rate=rate, words=words, confident=True)
+    language = langs.ENGLISH if rate < english_below else langs.BANGLA
+    return Detection(language=language, rate=rate, words=words, confident=True)

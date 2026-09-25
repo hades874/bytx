@@ -55,7 +55,7 @@ class AsrConfig:
     # single `model` serves every language it is able to.
     language_models: dict[str, str] = field(default_factory=dict)
     # Language of videos added without `--lang`.
-    default_language: str = "bn"
+    default_language: str = langs.BANGLA
     # `--lang auto` calls a video English when fewer than this share of the
     # words the Bangla model writes for a sample of it are Bangla function
     # words (see langdetect.py).
@@ -202,7 +202,7 @@ def load_config(path: str | Path | None = None) -> Config:
         key: AsrModelConfig(
             key=key,
             source=m["source"],
-            language=m.get("language", "bn"),
+            language=m.get("language", langs.BANGLA),
             already_ct2=m.get("already_ct2", False),
             max_clip_seconds=m.get("max_clip_seconds"),
         )
@@ -224,7 +224,7 @@ def load_config(path: str | Path | None = None) -> Config:
                 f"[asr.language_models] {lang} = {key!r}, but that model is pinned to "
                 f"{models[key].language!r}"
             )
-    default_language = asr_raw.get("default_language", "bn")
+    default_language = asr_raw.get("default_language", langs.BANGLA)
     if default_language not in langs.SUPPORTED:
         raise ValueError(
             f"asr.default_language = {default_language!r} is not supported "

@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 YOUTUBE = "youtube"
 FACEBOOK = "facebook"
+SUPPORTED = (YOUTUBE, FACEBOOK)
 
 _FACEBOOK_PREFIX = "fb_"
 
@@ -55,10 +56,6 @@ def ref_from_id(video_id: str) -> VideoRef:
     return VideoRef(YOUTUBE, video_id)
 
 
-def platform_of(video_id: str) -> str:
-    return ref_from_id(video_id).platform
-
-
 def _host(url: str) -> str:
     return (urlparse(url).hostname or "").lower()
 
@@ -71,6 +68,17 @@ def is_facebook_url(url: str) -> bool:
 def is_youtube_url(url: str) -> bool:
     host = _host(url)
     return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def platform_of_extractor(extractor_key: str | None) -> str | None:
+    """The platform of a yt-dlp extractor key ("Facebook", "FacebookReel",
+    "Youtube", "YoutubeTab"...), or None for an empty or unrelated key."""
+    key = (extractor_key or "").lower()
+    if key.startswith("facebook"):
+        return FACEBOOK
+    if key.startswith("youtube"):
+        return YOUTUBE
+    return None
 
 
 def platform_of_url(url: str) -> str | None:

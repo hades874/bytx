@@ -6,9 +6,11 @@ Kept dependency-free so config, fetch, and the CLI can all import it.
 
 from __future__ import annotations
 
-SUPPORTED: tuple[str, ...] = ("bn", "en")
+BANGLA = "bn"
+ENGLISH = "en"
+SUPPORTED: tuple[str, ...] = (BANGLA, ENGLISH)
 
-_NAMES = {"bn": "Bangla", "en": "English"}
+_NAMES = {BANGLA: "Bangla", ENGLISH: "English"}
 
 # Primary subtags and alternate spellings -> canonical code.
 _ALIASES = {

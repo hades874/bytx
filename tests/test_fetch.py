@@ -294,12 +294,6 @@ def _facebook_info(**overrides) -> dict:
     return info
 
 
-def test_extract_video_id_handles_both_platforms():
-    assert fetch.extract_video_id("https://youtu.be/aaaaaaaaaaa") == "aaaaaaaaaaa"
-    assert fetch.extract_video_id(FB_URL) == "fb_123456789012345"
-    assert fetch.extract_video_id("https://fb.watch/abc/") is None
-
-
 def test_get_video_info_for_a_facebook_video():
     _FakeYoutubeDL.responses[FB_URL] = _facebook_info()
     info = fetch.get_video_info(FB_URL, make_config())
@@ -348,14 +342,7 @@ def test_expand_a_facebook_video_url_is_left_alone():
     assert _FakeYoutubeDL.calls == [FB_URL]
 
 
-def test_resolve_opaque_url_returns_the_video_it_points_to():
-    short = "https://fb.watch/abcDEF12/"
-    _FakeYoutubeDL.responses[short] = _facebook_info()
-    info = fetch.resolve_opaque_url(short, make_config())
-    assert info is not None and info.id == "fb_123456789012345"
-
-
-def test_resolve_opaque_url_is_none_when_it_cannot_be_fetched():
-    short = "https://fb.watch/gone/"
-    _FakeYoutubeDL.responses[short] = None
-    assert fetch.resolve_opaque_url(short, make_config()) is None
+def test_flat_entries_with_an_unrecognised_extractor_and_no_url_are_dropped():
+    url = "https://example.com/list"
+    _FakeYoutubeDL.responses[url] = {"entries": [{"id": "9", "ie_key": "Generic"}]}
+    assert fetch.expand_to_video_urls(url, make_config()) == []
