@@ -58,3 +58,40 @@ def test_append_entry_keeps_multiline_title_on_one_line(tmp_path):
     path = tmp_path / "TRANSCRIBED_LEDGER.md"
     ledger.append_entry(path, make_video(id="abc123", title="x\n- id: forged"))
     assert ledger.load_seen_ids(path) == {"abc123"}
+
+
+def test_append_entry_records_the_language(tmp_path):
+    path = tmp_path / "TRANSCRIBED_LEDGER.md"
+    ledger.append_entry(path, make_video(id="en1", language="en"))
+    ledger.append_entry(path, make_video(id="bn1", language="bn"))
+    ledger.append_entry(path, make_video(id="unk1"))
+
+    content = path.read_text(encoding="utf-8")
+    entries = {e.split("\n", 1)[0]: e for e in content.strip().split("\n\n")}
+    assert "  language: en\n" in entries["- id: en1"] + "\n"
+    assert "  language: bn\n" in entries["- id: bn1"] + "\n"
+    assert "  language: unknown\n" in entries["- id: unk1"] + "\n"
+
+
+def test_ledger_with_language_lines_and_old_entries_without_them_load_together(tmp_path):
+    path = tmp_path / "TRANSCRIBED_LEDGER.md"
+    path.write_text(
+        "- id: old1\n  channel: C\n  title: T\n  url: u\n  date: 2026-09-24\n\n",  # pre-language format
+        encoding="utf-8",
+    )
+    ledger.append_entry(path, make_video(id="new1", language="en"))
+
+    assert ledger.load_seen_ids(path) == {"old1", "new1"}
+
+
+def test_facebook_ids_roundtrip_next_to_youtube_ones(tmp_path):
+    path = tmp_path / "TRANSCRIBED_LEDGER.md"
+    ledger.append_entry(path, make_video(id="abc123"))
+    ledger.append_entry(
+        path,
+        make_video(id="fb_123456789012345", url="https://www.facebook.com/watch/?v=123456789012345",
+                   platform="facebook"),
+    )
+
+    assert ledger.load_seen_ids(path) == {"abc123", "fb_123456789012345"}
+    assert "url: https://www.facebook.com/watch/?v=123456789012345" in path.read_text(encoding="utf-8")

@@ -7,16 +7,20 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from . import store
+from . import langs, store
 from .config import Config
 from .llm import OllamaClient
 
-_LANGUAGE_NAMES = {"bn": "Bangla", "en": "English"}
-
 
 def _language_instruction(language: str) -> str:
-    name = _LANGUAGE_NAMES.get(language, language)
-    return f"Write your response in {name}."
+    return f"Write your response in {langs.display_name(language)}."
+
+
+def summary_language(cfg: Config, video: store.Video) -> str:
+    """`summarize.language`, or the video's own language when it is "auto"."""
+    if cfg.summarize.language != "auto":
+        return cfg.summarize.language
+    return video.language or "bn"
 
 
 def window_segments(
@@ -40,11 +44,11 @@ def window_segments(
     return windows
 
 
-def _map_summarize(client: OllamaClient, cfg: Config, text: str) -> str:
+def _map_summarize(client: OllamaClient, cfg: Config, text: str, language: str) -> str:
     prompt = (
         "Summarize the following excerpt from a video transcript in a few "
         "concise sentences, keeping key facts, names, and numbers. "
-        f"{_language_instruction(cfg.summarize.language)}\n\n"
+        f"{_language_instruction(language)}\n\n"
         f"Transcript excerpt:\n{text}"
     )
     return client.chat(
@@ -55,7 +59,7 @@ def _map_summarize(client: OllamaClient, cfg: Config, text: str) -> str:
 
 
 def _reduce_summarize(
-    client: OllamaClient, cfg: Config, title: str | None, partial_summaries: list[str]
+    client: OllamaClient, cfg: Config, title: str | None, partial_summaries: list[str], language: str
 ) -> str:
     if len(partial_summaries) == 1:
         joined = partial_summaries[0]
@@ -67,7 +71,7 @@ def _reduce_summarize(
         f"{title_line}Below are summaries of consecutive parts of a video's "
         "transcript, in order. Combine them into a single coherent summary "
         "of the whole video: a short overview paragraph followed by a few "
-        f"bullet points of key takeaways. {_language_instruction(cfg.summarize.language)}\n\n"
+        f"bullet points of key takeaways. {_language_instruction(language)}\n\n"
         f"Part summaries:\n{joined}"
     )
     return client.chat(
@@ -89,13 +93,15 @@ def summarize_video(
     windows = window_segments(segments, cfg.summarize.map_window_minutes)
     if not windows:
         return ""
+    language = summary_language(cfg, video)
 
     if len(windows) == 1:
         text = " ".join(s.text for s in windows[0])
-        return _map_summarize(client, cfg, text)
+        return _map_summarize(client, cfg, text, language)
 
     partial_summaries = [
-        _map_summarize(client, cfg, " ".join(s.text for s in window)) for window in windows
+        _map_summarize(client, cfg, " ".join(s.text for s in window), language)
+        for window in windows
     ]
-    return _reduce_summarize(client, cfg, video.title, partial_summaries)
+    return _reduce_summarize(client, cfg, video.title, partial_summaries, language)
 

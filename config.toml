@@ -9,8 +9,20 @@ models_dir = "models"
 transcribed_files_dir = "yt-transcribed-files"
 
 [asr]
-# Which converted CTranslate2 model to use by default. See `bytx bench` to compare.
+# Default model, used by `bytx bench` and for any language not listed under
+# [asr.language_models]. See `bytx bench` to compare models.
 model = "tugstugi-medium-bn"
+# Language of videos added without `bytx add --lang`. Nothing guesses a video's
+# language for you: Whisper's language ID and YouTube's metadata both call
+# Bangla videos with English words in them English, so English is opt-in.
+default_language = "bn"
+# `bytx add --lang auto` decides each video's language when it is processed, by
+# transcribing a sample of it with the Bangla model: Bangla speech (even with
+# English words mixed in) comes out full of Bangla grammar words, English speech
+# does not. English if fewer than this share of the words are Bangla function
+# words. Measured on this library: Bangla videos 12.9%-29.3%, English 1.5%-8.5%.
+# Raise it to call more videos English, lower it to call more Bangla.
+auto_english_below = 0.10
 # auto | cuda | cpu
 device = "auto"
 # fp16 suits the RTX 4070; falls back automatically if the GPU rejects it (see doctor).
@@ -25,7 +37,9 @@ vad_min_silence_ms = 500
 # per window and Bengali needs ~0.7 tokens/char, so a 30 s window overflows
 # and the text is cut mid-sentence (the rest of the window is lost). 12 s
 # clips stay well under the cap; transcribe.py also re-splits any clip that
-# still hits it. Lower this for very fast speakers, don't raise it past ~15.
+# still hits it. Lower this for very fast speakers, don't raise it past ~15
+# for Bangla. English needs far fewer tokens, so a model entry below can
+# override this with its own max_clip_seconds.
 max_clip_seconds = 12
 # Silero VAD sensitivity (lower = keeps quieter/noisier speech) and padding
 # added around each detected speech chunk.
@@ -35,8 +49,8 @@ vad_speech_pad_ms = 400
 # own timestamp tokens -- measured output was [0.0 - 0.0] for every
 # segment. With this on, timestamp-token prediction is skipped and each
 # segment's start/end are the real boundaries of the clip it was decoded
-# from (one segment per clip, roughly one per phrase). Safe to leave on for
-# large-v3-turbo too.
+# from (one segment per clip, roughly one per phrase). Also used for English
+# on large-v3-turbo, so English cues are clip-sized (see max_clip_seconds).
 without_timestamps = true
 condition_on_previous_text = false
 # repetition_penalty != 1.0 and no_repeat_ngram_size != 0 force faster-whisper
@@ -47,23 +61,36 @@ condition_on_previous_text = false
 repetition_penalty = 1.0
 no_repeat_ngram_size = 0
 # Optional comma-separated hotwords/subject terms to bias decoding, e.g. "কোয়ান্টাম, নিউটন"
+# or "Kubernetes, PyTorch". Applied to every language, so leave empty for mixed libraries.
 initial_prompt = ""
 
+# Which model transcribes each language. A video's language is set with
+# `bytx add --lang bn|en` (default: asr.default_language).
+[asr.language_models]
+bn = "tugstugi-medium-bn"
+en = "large-v3-turbo"
+
+# `language` pins a model to one language; "" means multilingual (the
+# language is chosen per video).
 [asr.models.tugstugi-medium-bn]
 source = "bengaliAI/tugstugi_bengaliai-asr_whisper-medium"
 language = "bn"
 
 [asr.models.large-v3-turbo]
 source = "deepdml/faster-whisper-large-v3-turbo-ct2"
-language = "bn"
+language = ""
 already_ct2 = true
+# English is ~0.3 tokens/char (vs ~0.7 for Bengali), so longer clips stay under
+# Whisper's 224-token cap and give the decoder more context.
+max_clip_seconds = 15
 
 [fetch]
 # Skip uploader (human) subtitles and always run ASR when true.
 force_asr = false
 sleep_interval_s = 1
 max_sleep_interval_s = 5
-# Set to a browser name (e.g. "chrome", "edge", "firefox") to use its cookies for age/region-gated videos.
+# Set to a browser name (e.g. "chrome", "edge", "firefox") to use its cookies for age/region-gated
+# YouTube videos and for private/friends-only/group Facebook videos (you must be logged in there).
 cookies_from_browser = ""
 
 [ollama]
@@ -80,4 +107,5 @@ top_k = 8
 [summarize]
 enabled = true
 map_window_minutes = 10
-language = "bn"
+# "auto" writes each summary in its video's own language; set "bn" or "en" to force one.
+language = "auto"

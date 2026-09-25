@@ -9,8 +9,12 @@ if it fails, rather than failing the whole run.
 Whisper stops generating after 224 tokens per decode window, and Bengali
 needs ~0.7 tokens per character, so a 30 s window overflows and its text is
 silently cut off mid-sentence. To avoid that, audio is split at VAD pauses
-into short clips (`asr.max_clip_seconds`), each decoded on its own, and any
-clip whose output still nears the token limit is split again and re-decoded.
+into short clips (`asr.max_clip_seconds`, overridable per model), each decoded
+on its own, and any clip whose output still nears the token limit is split
+again and re-decoded.
+
+A Transcriber wraps one model. `TranscriberPool` routes each language to its
+configured model and keeps only one model in memory at a time.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from faster_whisper.audio import decode_audio
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 from . import store
-from .config import AsrConfig, AsrModelConfig
+from .config import AsrConfig, AsrModelConfig, Config
 from .cuda_dll import ensure_cuda_dll_paths
 
 logger = logging.getLogger(__name__)
@@ -42,8 +46,11 @@ MIN_CLIP_S = 1.5
 # VAD padding can push a lone clip slightly past max_clip_seconds; only clips
 # beyond this multiple of it are force-split before decoding.
 _MAX_CLIP_SLACK = 1.25
-# Rough tokens-per-character for Bengali, used only if the model exposes no tokenizer.
-_FALLBACK_TOKENS_PER_CHAR = 0.75
+# Language detection transcribes this many clips, spread across the video.
+SAMPLE_CLIPS = 10
+# Rough tokens-per-character, used only if the model exposes no tokenizer.
+_FALLBACK_TOKENS_PER_CHAR = {"bn": 0.75, "en": 0.3}
+_DEFAULT_TOKENS_PER_CHAR = 0.5
 
 # Compute types to try, in order, per device, after the configured one fails.
 _FALLBACK_CHAIN: dict[str, list[str]] = {
@@ -110,6 +117,19 @@ def plan_clips(
     if cur_start is not None:
         clips.append((cur_start, cur_end))
     return clips
+
+
+def evenly_spaced(items: list, n: int) -> list:
+    """Up to `n` items picked at even intervals, always including the first and
+    last (all of them if there are no more than `n`)."""
+    if n <= 0:
+        return []
+    if len(items) <= n:
+        return list(items)
+    if n == 1:
+        return [items[len(items) // 2]]
+    picks = dict.fromkeys(round(i * (len(items) - 1) / (n - 1)) for i in range(n))
+    return [items[i] for i in picks]
 
 
 def find_split_point(
@@ -219,7 +239,9 @@ class Transcriber:
 
     def _smoke_test(self, model: WhisperModel) -> None:
         silence = np.zeros(16000, dtype=np.float32)  # 1s @ 16kHz
-        segments, _info = model.transcribe(silence, language=self.model_cfg.language, beam_size=1)
+        segments, _info = model.transcribe(
+            silence, language=self.model_cfg.language or "en", beam_size=1
+        )
         list(segments)  # force generator to run
 
     @property
@@ -234,25 +256,64 @@ class Transcriber:
         assert self._compute_type is not None
         return self._compute_type
 
-    def transcribe(self, audio_path: Path) -> TranscribeResult:
+    @property
+    def max_clip_seconds(self) -> float:
+        return self.model_cfg.max_clip_seconds or self.asr_cfg.max_clip_seconds
+
+    def _resolve_language(self, language: str | None) -> str:
+        """A pinned model always decodes in its own language; a multilingual
+        model needs the caller to say which."""
+        pinned = self.model_cfg.language
+        if pinned:
+            if language and language != pinned:
+                raise ValueError(
+                    f"Model {self.model_cfg.key!r} is pinned to {pinned!r} and cannot "
+                    f"transcribe {language!r}"
+                )
+            return pinned
+        if not language:
+            raise ValueError(
+                f"Model {self.model_cfg.key!r} is multilingual; pass the language to transcribe"
+            )
+        return language
+
+    def _vad_options(self) -> VadOptions:
+        return VadOptions(
+            threshold=self.asr_cfg.vad_threshold,
+            min_silence_duration_ms=self.asr_cfg.vad_min_silence_ms,
+            max_speech_duration_s=self.max_clip_seconds,
+            speech_pad_ms=self.asr_cfg.vad_speech_pad_ms,
+        )
+
+    def _plan_clips(self, audio: np.ndarray) -> list[tuple[int, int]]:
+        """Speech in `audio` as (start, end) sample ranges of at most max_clip_seconds."""
+        if self.asr_cfg.vad_filter:
+            chunks = get_speech_timestamps(audio, self._vad_options())
+        else:
+            chunks = [{"start": 0, "end": len(audio)}] if len(audio) else []
+        return plan_clips(chunks, self.max_clip_seconds)
+
+    def sample_text(self, audio_path: Path, language: str | None = None, clips: int = SAMPLE_CLIPS) -> str:
+        """Transcribes about `clips` speech clips spread evenly across the audio
+        (so an intro in another language doesn't decide it) and returns the text.
+        A cheap look at what this model makes of the audio, for language detection.
+        """
+        language = self._resolve_language(language)
+        self._load()
+        audio = decode_audio(str(audio_path), sampling_rate=SAMPLE_RATE)
+        stats = TranscribeStats()
+        pieces: list[tuple[int, int, str]] = []
+        for start, end in evenly_spaced(self._plan_clips(audio), clips):
+            self._decode_range(audio, start, end, stats, pieces, language)
+        return " ".join(text for _s, _e, text in pieces)
+
+    def transcribe(self, audio_path: Path, language: str | None = None) -> TranscribeResult:
+        language = self._resolve_language(language)
         self._load()
         assert self._model is not None
 
         audio = decode_audio(str(audio_path), sampling_rate=SAMPLE_RATE)
-        max_clip_s = self.asr_cfg.max_clip_seconds
-        if self.asr_cfg.vad_filter:
-            chunks = get_speech_timestamps(
-                audio,
-                VadOptions(
-                    threshold=self.asr_cfg.vad_threshold,
-                    min_silence_duration_ms=self.asr_cfg.vad_min_silence_ms,
-                    max_speech_duration_s=max_clip_s,
-                    speech_pad_ms=self.asr_cfg.vad_speech_pad_ms,
-                ),
-            )
-        else:
-            chunks = [{"start": 0, "end": len(audio)}] if len(audio) else []
-        clips = plan_clips(chunks, max_clip_s)
+        clips = self._plan_clips(audio)
 
         stats = TranscribeStats(
             clips=len(clips),
@@ -261,7 +322,7 @@ class Transcriber:
         )
         pieces: list[tuple[int, int, str]] = []
         for start, end in clips:
-            self._decode_range(audio, start, end, stats, pieces)
+            self._decode_range(audio, start, end, stats, pieces, language)
 
         segments = [
             store.Segment(idx=i, start_s=s / SAMPLE_RATE, end_s=e / SAMPLE_RATE, text=text)
@@ -271,7 +332,7 @@ class Transcriber:
             segments=segments,
             device=self._device,  # type: ignore[arg-type]
             compute_type=self._compute_type,  # type: ignore[arg-type]
-            language=self.model_cfg.language,
+            language=language,
             stats=stats,
         )
 
@@ -282,6 +343,7 @@ class Transcriber:
         end: int,
         stats: TranscribeStats,
         out: list[tuple[int, int, str]],
+        language: str,
     ) -> None:
         """Decodes audio[start:end] into `out` as (start, end, text) pieces, in
         time order. Splits the range in two (at its quietest point) when it is
@@ -291,29 +353,29 @@ class Transcriber:
         duration_s = (end - start) / SAMPLE_RATE
         can_split = duration_s >= 2 * MIN_CLIP_S
 
-        if can_split and duration_s > self.asr_cfg.max_clip_seconds * _MAX_CLIP_SLACK:
+        if can_split and duration_s > self.max_clip_seconds * _MAX_CLIP_SLACK:
             mid = start + find_split_point(audio[start:end])
-            self._decode_range(audio, start, mid, stats, out)
-            self._decode_range(audio, mid, end, stats, out)
+            self._decode_range(audio, start, mid, stats, out, language)
+            self._decode_range(audio, mid, end, stats, out, language)
             return
 
-        text = self._decode_clip(audio[start:end])
-        if text and self._nears_token_limit(text):
+        text = self._decode_clip(audio[start:end], language)
+        if text and self._nears_token_limit(text, language):
             if can_split:
                 stats.resplit += 1
                 mid = start + find_split_point(audio[start:end])
-                self._decode_range(audio, start, mid, stats, out)
-                self._decode_range(audio, mid, end, stats, out)
+                self._decode_range(audio, start, mid, stats, out, language)
+                self._decode_range(audio, mid, end, stats, out, language)
                 return
             stats.truncated_unresolved += 1
         if text:
             out.append((start, end, text))
 
-    def _decode_clip(self, clip: np.ndarray) -> str:
+    def _decode_clip(self, clip: np.ndarray, language: str) -> str:
         assert self._model is not None
         segments_iter, _info = self._model.transcribe(
             clip,
-            language=self.model_cfg.language,
+            language=language,
             beam_size=self.asr_cfg.beam_size,
             vad_filter=False,
             without_timestamps=self.asr_cfg.without_timestamps,
@@ -325,14 +387,41 @@ class Transcriber:
         text = " ".join(seg.text.strip() for seg in segments_iter).strip()
         return collapse_repeated_ngrams(text)
 
-    def _nears_token_limit(self, text: str) -> bool:
+    def _nears_token_limit(self, text: str, language: str) -> bool:
         tokenizer = getattr(self._model, "hf_tokenizer", None)
         if tokenizer is not None:
             n_tokens = len(tokenizer.encode(text, add_special_tokens=False).ids)
         else:
-            n_tokens = int(len(text) * _FALLBACK_TOKENS_PER_CHAR)
+            per_char = _FALLBACK_TOKENS_PER_CHAR.get(language, _DEFAULT_TOKENS_PER_CHAR)
+            n_tokens = int(len(text) * per_char)
         return n_tokens >= WHISPER_TOKEN_LIMIT - TOKEN_MARGIN
 
     def unload(self) -> None:
         self._model = None
         gc.collect()
+
+
+class TranscriberPool:
+    """Hands out the Transcriber for a language and keeps at most one model
+    loaded: switching to a different model unloads the previous one first, so
+    two models never compete for VRAM.
+    """
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self._current: Transcriber | None = None
+
+    def _get(self, model_cfg: AsrModelConfig) -> Transcriber:
+        if self._current is not None and self._current.model_cfg.key == model_cfg.key:
+            return self._current
+        self.unload()
+        self._current = Transcriber(self.cfg.paths.models_dir / model_cfg.key, model_cfg, self.cfg.asr)
+        return self._current
+
+    def for_language(self, language: str) -> Transcriber:
+        return self._get(self.cfg.asr.model_for_language(language))
+
+    def unload(self) -> None:
+        if self._current is not None:
+            self._current.unload()
+            self._current = None

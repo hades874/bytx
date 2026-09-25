@@ -10,6 +10,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import langs
+
 DEFAULT_CONFIG_FILENAME = "config.toml"
 
 
@@ -17,8 +19,17 @@ DEFAULT_CONFIG_FILENAME = "config.toml"
 class AsrModelConfig:
     key: str
     source: str
+    # Language this model is pinned to (e.g. a Bangla-only fine-tune). Empty
+    # means multilingual: the language is chosen per video.
     language: str
     already_ct2: bool = False
+    # Overrides asr.max_clip_seconds for this model (its language's token
+    # density decides how long a clip can be before Whisper's 224-token cap).
+    max_clip_seconds: float | None = None
+
+    @property
+    def multilingual(self) -> bool:
+        return not self.language
 
 
 @dataclass(frozen=True)
@@ -40,16 +51,46 @@ class AsrConfig:
     max_clip_seconds: float = 12.0
     vad_threshold: float = 0.5
     vad_speech_pad_ms: int = 400
+    # Language code -> model key (see [asr.language_models]). When empty, the
+    # single `model` serves every language it is able to.
+    language_models: dict[str, str] = field(default_factory=dict)
+    # Language of videos added without `--lang`.
+    default_language: str = "bn"
+    # `--lang auto` calls a video English when fewer than this share of the
+    # words the Bangla model writes for a sample of it are Bangla function
+    # words (see langdetect.py).
+    auto_english_below: float = 0.10
 
-    def active_model(self) -> AsrModelConfig:
+    def _model(self, key: str) -> AsrModelConfig:
         try:
-            return self.models[self.model]
+            return self.models[key]
         except KeyError as exc:
             known = ", ".join(sorted(self.models)) or "(none defined)"
             raise ValueError(
-                f"asr.model = {self.model!r} is not defined under [asr.models.*]. "
-                f"Known models: {known}"
+                f"ASR model {key!r} is not defined under [asr.models.*]. Known models: {known}"
             ) from exc
+
+    def active_model(self) -> AsrModelConfig:
+        return self._model(self.model)
+
+    def model_for_language(self, language: str) -> AsrModelConfig:
+        """The model that transcribes `language`: the [asr.language_models]
+        entry, else `asr.model` if it can handle that language."""
+        key = self.language_models.get(language)
+        if key is not None:
+            return self._model(key)
+        active = self.active_model()
+        if active.multilingual or active.language == language:
+            return active
+        configured = ", ".join(sorted(self.language_models)) or active.language
+        raise ValueError(
+            f"No ASR model is configured for language {language!r} "
+            f"(configured: {configured}). Add it under [asr.language_models]."
+        )
+
+    def required_model_keys(self) -> list[str]:
+        """Every model this config can route to, deduplicated, for setup/doctor."""
+        return list(dict.fromkeys([self.model, *self.language_models.values()]))
 
 
 @dataclass(frozen=True)
@@ -79,6 +120,7 @@ class RagConfig:
 class SummarizeConfig:
     enabled: bool
     map_window_minutes: int
+    # "auto" writes each summary in its video's language; "bn"/"en" force one.
     language: str
 
 
@@ -162,9 +204,32 @@ def load_config(path: str | Path | None = None) -> Config:
             source=m["source"],
             language=m.get("language", "bn"),
             already_ct2=m.get("already_ct2", False),
+            max_clip_seconds=m.get("max_clip_seconds"),
         )
         for key, m in models_raw.items()
     }
+    language_models = dict(asr_raw.get("language_models", {}))
+    for lang, key in language_models.items():
+        if lang not in langs.SUPPORTED:
+            raise ValueError(
+                f"[asr.language_models] has unsupported language {lang!r} "
+                f"(supported: {', '.join(langs.SUPPORTED)})"
+            )
+        if key not in models:
+            raise ValueError(
+                f"[asr.language_models] {lang} = {key!r} is not defined under [asr.models.*]"
+            )
+        if models[key].language and models[key].language != lang:
+            raise ValueError(
+                f"[asr.language_models] {lang} = {key!r}, but that model is pinned to "
+                f"{models[key].language!r}"
+            )
+    default_language = asr_raw.get("default_language", "bn")
+    if default_language not in langs.SUPPORTED:
+        raise ValueError(
+            f"asr.default_language = {default_language!r} is not supported "
+            f"(supported: {', '.join(langs.SUPPORTED)})"
+        )
     asr = AsrConfig(
         model=asr_raw.get("model", "tugstugi-medium-bn"),
         device=asr_raw.get("device", "auto"),
@@ -181,6 +246,9 @@ def load_config(path: str | Path | None = None) -> Config:
         max_clip_seconds=asr_raw.get("max_clip_seconds", 12.0),
         vad_threshold=asr_raw.get("vad_threshold", 0.5),
         vad_speech_pad_ms=asr_raw.get("vad_speech_pad_ms", 400),
+        language_models=language_models,
+        default_language=default_language,
+        auto_english_below=asr_raw.get("auto_english_below", 0.10),
     )
 
     fetch_raw = raw.get("fetch", {})
@@ -210,7 +278,7 @@ def load_config(path: str | Path | None = None) -> Config:
     summarize = SummarizeConfig(
         enabled=summarize_raw.get("enabled", True),
         map_window_minutes=summarize_raw.get("map_window_minutes", 10),
-        language=summarize_raw.get("language", "bn"),
+        language=summarize_raw.get("language", "auto"),
     )
 
     return Config(

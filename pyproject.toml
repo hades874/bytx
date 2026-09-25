@@ -1,7 +1,7 @@
 [project]
 name = "bytx"
 version = "0.1.0"
-description = "Local Bangla YouTube transcription and searchable knowledge store (faster-whisper + Ollama)"
+description = "Local Bangla and English YouTube and Facebook transcription and searchable knowledge store (faster-whisper + Ollama)"
 readme = "README.md"
 authors = [
     { name = "Hasan Farabi", email = "h.farabi01@gmail.com" }

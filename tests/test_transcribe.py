@@ -56,6 +56,8 @@ class _FakeWhisperModel:
     # Maps a decoded clip (np array) to its text; replaced per test.
     respond = staticmethod(lambda clip: "hello")
     clip_lengths: list[int] = []
+    # Language passed to each real (non smoke-test) decode.
+    languages: list[str | None] = []
 
     class _Tokenizer:
         """One token per whitespace-separated word."""
@@ -93,7 +95,9 @@ class _FakeWhisperModel:
                 self.start, self.end, self.text = start, end, text
 
         _FakeWhisperModel.clip_lengths.append(len(audio))
+        _FakeWhisperModel.languages.append(language)
         return iter([Seg(0.0, len(audio) / SR, _FakeWhisperModel.respond(audio))]), info
+
 
 
 @pytest.fixture(autouse=True)
@@ -102,6 +106,7 @@ def _patch_whisper_model(monkeypatch, tmp_path):
     _FakeWhisperModel.fail_on_transcribe = set()
     _FakeWhisperModel.respond = staticmethod(lambda clip: "hello")
     _FakeWhisperModel.clip_lengths = []
+    _FakeWhisperModel.languages = []
     monkeypatch.setattr(transcribe, "WhisperModel", _FakeWhisperModel)
     monkeypatch.setattr(transcribe, "ensure_cuda_dll_paths", lambda: [])
     (tmp_path / "model_marker").write_text("x")
@@ -109,8 +114,11 @@ def _patch_whisper_model(monkeypatch, tmp_path):
 
 
 def make_transcriber(tmp_path, device="auto", compute_type="float16", vad_filter=False,
-                     max_clip_seconds=12.0):
-    model_cfg = AsrModelConfig(key="m", source="org/m", language="bn")
+                     max_clip_seconds=12.0, language="bn", model_max_clip_seconds=None):
+    """`language` pins the model to a language; "" makes it multilingual."""
+    model_cfg = AsrModelConfig(
+        key="m", source="org/m", language=language, max_clip_seconds=model_max_clip_seconds
+    )
     asr_cfg = AsrConfig(
         model="m", device=device, compute_type=compute_type, beam_size=1,
         vad_filter=vad_filter, vad_min_silence_ms=500, without_timestamps=True,
@@ -315,3 +323,183 @@ def test_unload_clears_model_and_reloads_on_next_use(tmp_path):
     assert t._model is None
     # Using it again should transparently reload.
     assert t.device == "cuda"
+
+
+# --- languages ----------------------------------------------------------------
+
+def test_multilingual_model_decodes_in_the_requested_language(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    t = make_transcriber(tmp_path, language="")
+    result = t.transcribe(Path("x.wav"), "en")
+    assert result.language == "en"
+    assert _FakeWhisperModel.languages == ["en"]
+
+
+def test_pinned_model_uses_its_own_language_when_none_is_passed(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    result = make_transcriber(tmp_path, language="bn").transcribe(Path("x.wav"))
+    assert result.language == "bn"
+    assert _FakeWhisperModel.languages == ["bn"]
+
+
+def test_pinned_model_refuses_a_different_language(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    with pytest.raises(ValueError, match="pinned to 'bn' and cannot transcribe 'en'"):
+        make_transcriber(tmp_path, language="bn").transcribe(Path("x.wav"), "en")
+    assert _FakeWhisperModel.languages == []  # refused before decoding anything
+
+
+def test_multilingual_model_needs_a_language(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    with pytest.raises(ValueError, match="multilingual"):
+        make_transcriber(tmp_path, language="").transcribe(Path("x.wav"))
+
+
+def test_smoke_test_works_for_multilingual_models(tmp_path):
+    # A multilingual model has no pinned language to smoke-test with; loading must still work.
+    assert make_transcriber(tmp_path, language="").device == "cuda"
+
+
+def test_model_max_clip_seconds_overrides_the_global_setting(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(10))  # no VAD: one 10 s range
+    # Global limit 12 s keeps the range whole ...
+    assert len(make_transcriber(tmp_path, max_clip_seconds=12.0).transcribe(Path("x.wav")).segments) == 1
+    # ... but a model limit of 6 s (x1.25 slack = 7.5 s) forces a split.
+    t = make_transcriber(tmp_path, max_clip_seconds=12.0, model_max_clip_seconds=6.0)
+    assert t.max_clip_seconds == 6.0
+    assert len(t.transcribe(Path("x.wav")).segments) == 2
+
+
+def test_token_limit_fallback_depends_on_language(tmp_path):
+    t = make_transcriber(tmp_path)
+    t._model = object()  # no hf_tokenizer -> characters-per-token estimate
+    text = "a" * 400
+    assert t._nears_token_limit(text, "bn")  # 400 * 0.75 = 300 tokens
+    assert not t._nears_token_limit(text, "en")  # 400 * 0.3 = 120 tokens
+    assert not t._nears_token_limit("a" * 100, "xx")  # unknown language: 0.5 -> 50 tokens
+
+
+# --- TranscriberPool -------------------------------------------------------------
+
+def _pool_config(tmp_path, extra=""):
+    (tmp_path / "config.toml").write_text(
+        """
+[asr]
+model = "bn-model"
+[asr.language_models]
+bn = "bn-model"
+en = "multi"
+[asr.models.bn-model]
+source = "org/bn"
+language = "bn"
+[asr.models.multi]
+source = "org/multi"
+language = ""
+"""
+        + extra,
+        encoding="utf-8",
+    )
+    return load_config(tmp_path / "config.toml")
+
+
+def test_pool_routes_languages_to_their_models(tmp_path):
+    pool = transcribe.TranscriberPool(_pool_config(tmp_path))
+    assert pool.for_language("bn").model_cfg.key == "bn-model"
+    assert pool.for_language("en").model_cfg.key == "multi"
+
+
+def test_pool_reuses_the_loaded_model_for_the_same_key(tmp_path):
+    pool = transcribe.TranscriberPool(_pool_config(tmp_path))
+    english = pool.for_language("en")
+    assert pool.for_language("en") is english  # same model: no reload
+
+
+def test_pool_unloads_the_previous_model_before_switching(tmp_path):
+    cfg = _pool_config(tmp_path)
+    (cfg.paths.models_dir / "bn-model").mkdir(parents=True)
+    pool = transcribe.TranscriberPool(cfg)
+    bangla = pool.for_language("bn")
+    _ = bangla.device  # load it
+    assert bangla._model is not None
+
+    pool.for_language("en")
+
+    assert bangla._model is None  # freed before the other model is used
+
+
+def test_pool_unload_drops_the_current_model(tmp_path):
+    cfg = _pool_config(tmp_path)
+    (cfg.paths.models_dir / "multi").mkdir(parents=True)
+    pool = transcribe.TranscriberPool(cfg)
+    model = pool.for_language("en")
+    _ = model.device
+    pool.unload()
+    assert model._model is None
+    assert pool.for_language("en") is not model  # a fresh Transcriber is built on next use
+
+
+def test_pool_unmapped_language_raises_clear_error(tmp_path):
+    pool = transcribe.TranscriberPool(_pool_config(tmp_path))
+    with pytest.raises(ValueError, match="No ASR model is configured for language 'fr'"):
+        pool.for_language("fr")
+
+
+# --- sample_text (used by language detection) -----------------------------------------
+
+def test_evenly_spaced_returns_everything_when_there_are_few_items():
+    assert transcribe.evenly_spaced([1, 2, 3], 5) == [1, 2, 3]
+    assert transcribe.evenly_spaced([], 5) == []
+
+
+def test_evenly_spaced_includes_first_and_last_and_spreads_the_rest():
+    assert transcribe.evenly_spaced(list(range(100)), 5) == [0, 25, 50, 74, 99]
+    picks = transcribe.evenly_spaced(list(range(10)), 3)
+    assert picks[0] == 0 and picks[-1] == 9 and len(picks) == 3
+
+
+def test_evenly_spaced_edge_sizes():
+    assert transcribe.evenly_spaced(list(range(9)), 1) == [4]
+    assert transcribe.evenly_spaced(list(range(9)), 0) == []
+    assert transcribe.evenly_spaced(list(range(4)), 3) == [0, 2, 3]  # picks never repeat
+
+
+def _spread_chunks(n, gap_s=30, len_s=5):
+    return [{"start": i * gap_s * SR, "end": (i * gap_s + len_s) * SR} for i in range(n)]
+
+
+def test_sample_text_decodes_only_a_spread_of_clips(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(40 * 30), vad_chunks=_spread_chunks(40))
+    t = make_transcriber(tmp_path, vad_filter=True)
+    text = t.sample_text(Path("x.wav"), clips=6)
+    assert len(_FakeWhisperModel.clip_lengths) == 6  # not all 40
+    assert text == "hello " * 5 + "hello"
+
+
+def test_sample_text_covers_the_start_and_the_end_of_the_video(tmp_path, monkeypatch):
+    audio = np.zeros(40 * 30 * SR, dtype=np.float32)
+    for c in _spread_chunks(40):  # tag each speech chunk with its position
+        audio[c["start"] : c["end"]] = 0.5 + c["start"] / (40 * 30 * SR) / 10
+    _patch_audio(monkeypatch, audio, vad_chunks=_spread_chunks(40))
+    seen = []
+    _FakeWhisperModel.respond = staticmethod(lambda clip: seen.append(float(clip[0])) or "x")
+    make_transcriber(tmp_path, vad_filter=True).sample_text(Path("x.wav"), clips=5)
+    assert seen[0] == pytest.approx(0.5)  # first chunk
+    assert seen[-1] > 0.59  # last chunk (0.5 + 1170/1200/10)
+
+
+def test_sample_text_uses_the_pinned_language(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(10), vad_chunks=_spread_chunks(1))
+    make_transcriber(tmp_path, vad_filter=True, language="bn").sample_text(Path("x.wav"))
+    assert _FakeWhisperModel.languages == ["bn"]
+
+
+def test_sample_text_of_a_silent_video_is_empty(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(10), vad_chunks=[])
+    assert make_transcriber(tmp_path, vad_filter=True).sample_text(Path("x.wav")) == ""
+    assert _FakeWhisperModel.clip_lengths == []
+
+
+def test_sample_text_refuses_a_language_the_model_is_not_pinned_to(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(10), vad_chunks=_spread_chunks(1))
+    with pytest.raises(ValueError, match="pinned to 'bn'"):
+        make_transcriber(tmp_path, vad_filter=True, language="bn").sample_text(Path("x.wav"), "en")

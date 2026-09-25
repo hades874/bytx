@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from . import store
@@ -14,6 +15,7 @@ from . import store
 _ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE_RE = re.compile(r"\s+")
 _MAX_FOLDER_NAME_LEN = 150
+_DATE_DIR_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _srt_timestamp(seconds: float) -> str:
@@ -76,6 +78,7 @@ def to_json(
         "duration": video.duration,
         "source": video.source,
         "asr_model": video.asr_model,
+        "language": video.language,
         "summary": summary,
         "segments": [
             {"start": s.start_s, "end": s.end_s, "text": s.text} for s in segments
@@ -146,8 +149,10 @@ def write_info_json(videos_root: Path, video: store.Video) -> Path:
         "upload_date": video.upload_date,
         "duration": video.duration,
         "description": video.description,
+        "platform": video.platform,
         "source": video.source,
         "asr_model": video.asr_model,
+        "language": video.language,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -175,7 +180,8 @@ def sanitize_folder_name(channel: str | None, title: str | None, video_id: str) 
     Falls back to video_id for either component if it's missing or becomes
     empty after cleaning. The combined name is truncated (not per-field, so
     a long title doesn't starve the channel name) to leave headroom under
-    Windows' 260-char MAX_PATH given yt-transcribed-files/<name>/transcript.txt.
+    Windows' 260-char MAX_PATH given
+    yt-transcribed-files/<date>/<name>/transcript.txt.
     """
     clean_channel = _clean_component(channel) if channel else ""
     clean_title = _clean_component(title) if title else ""
@@ -189,31 +195,42 @@ def sanitize_folder_name(channel: str | None, title: str | None, video_id: str) 
 
 
 def _find_existing_folder(root: Path, video_id: str) -> Path | None:
-    for child in root.iterdir():
+    """Finds the folder already holding this video, whichever date folder it
+    was filed under (or directly under root, for the pre-date-folder layout)."""
+    candidates = [child for child in root.iterdir() if child.is_dir()]
+    for date_dir in [c for c in candidates if _DATE_DIR_RE.fullmatch(c.name)]:
+        candidates.extend(child for child in date_dir.iterdir() if child.is_dir())
+    for child in candidates:
         marker = child / ".video_id"
-        if child.is_dir() and marker.is_file() and marker.read_text(encoding="utf-8").strip() == video_id:
+        if marker.is_file() and marker.read_text(encoding="utf-8").strip() == video_id:
             return child
     return None
 
 
 def write_transcript_copy(
-    root: Path, video: store.Video, segments: Sequence[store.Segment]
+    root: Path,
+    video: store.Video,
+    segments: Sequence[store.Segment],
+    today: date | None = None,
 ) -> Path:
     """Writes a human-facing plain-text transcript copy under
-    root/"<channel> - <title>"/transcript.txt, alongside a hidden
-    .video_id marker used to tell an idempotent re-run of the same video
-    (overwrite in place) apart from a genuine folder-name collision between
-    two different videos (which gets a " (<video_id>)" suffix instead).
+    root/<YYYY-MM-DD>/"<channel> - <title>"/transcript.txt, where the date is
+    the day the video was transcribed. A hidden .video_id marker tells an
+    idempotent re-run of the same video (overwrite in place, keeping its
+    original date folder) apart from a genuine folder-name collision between
+    two different videos on the same day (which gets a " (<video_id>)"
+    suffix instead).
     """
     root.mkdir(parents=True, exist_ok=True)
     # Reuse this video's folder even if its title/channel changed since the
     # last run, so a rename upstream doesn't leave an orphaned copy behind.
     out_dir = _find_existing_folder(root, video.id)
     if out_dir is None:
+        date_dir = root / (today or date.today()).isoformat()
         name = sanitize_folder_name(video.channel, video.title, video.id)
-        out_dir = root / name
+        out_dir = date_dir / name
         if out_dir.exists():
-            out_dir = root / f"{name} ({video.id})"
+            out_dir = date_dir / f"{name} ({video.id})"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "transcript.txt").write_text(to_txt(segments), encoding="utf-8")

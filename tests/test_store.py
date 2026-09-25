@@ -191,3 +191,213 @@ def test_video_cascade_delete_removes_segments_and_chunks(conn):
     conn.commit()
     assert store.get_segments(conn, "abc123") == []
     assert store.get_chunks(conn, "abc123") == []
+
+
+# --- language column & schema migration ------------------------------------------
+
+_V1_VIDEOS_TABLE = """
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version(version) VALUES (1);
+CREATE TABLE videos (
+    id TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT,
+    channel TEXT,
+    channel_id TEXT,
+    upload_date TEXT,
+    duration REAL,
+    description TEXT,
+    source TEXT,
+    asr_model TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+INSERT INTO videos (id, url, title, source, asr_model, status) VALUES
+    ('asr1', 'u1', 'Transcribed by ASR', 'asr', 'tugstugi-medium-bn', 'summarized'),
+    ('subs1', 'u2', 'Human subtitles', 'human_subs', NULL, 'indexed'),
+    ('queued1', 'u3', 'Not processed yet', NULL, NULL, 'queued'),
+    ('failed1', 'u4', 'Failed before transcribing', NULL, NULL, 'failed');
+"""
+
+
+def _v1_database(path):
+    """A library.db exactly as bytx created it before English support."""
+    c = sqlite3.connect(str(path))
+    c.executescript(_V1_VIDEOS_TABLE)
+    c.commit()
+    c.close()
+
+
+def test_new_database_is_created_at_the_current_schema_version(conn):
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION == 3
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
+    assert {"language", "platform"} <= columns
+
+
+def test_v1_database_is_migrated_and_keeps_its_rows(tmp_path):
+    path = tmp_path / "library.db"
+    _v1_database(path)
+
+    c = store.connect(path)
+
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION
+    assert {v.id for v in store.list_videos(c)} == {"asr1", "subs1", "queued1", "failed1"}
+    assert store.get_video(c, "asr1").title == "Transcribed by ASR"
+
+
+def test_migration_marks_every_existing_video_bangla(tmp_path):
+    """Before English support bytx only handled Bangla, queued and failed rows
+    included. NULL now means "detect at run time", so none may be left NULL or
+    an old queue would be re-detected."""
+    path = tmp_path / "library.db"
+    _v1_database(path)
+
+    c = store.connect(path)
+
+    languages = {v.id: v.language for v in store.list_videos(c)}
+    assert languages == {"asr1": "bn", "subs1": "bn", "queued1": "bn", "failed1": "bn"}
+
+
+def test_migration_is_idempotent(tmp_path):
+    path = tmp_path / "library.db"
+    _v1_database(path)
+    store.connect(path).close()
+    c = store.connect(path)  # second open must not try to add the column again
+    store.set_video_language(c, "queued1", "en")
+    c.close()
+
+    c = store.connect(path)  # ... and must not redo the backfill over a later choice
+
+    assert store.get_video(c, "queued1").language == "en"
+    assert c.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
+
+
+def test_migrated_database_accepts_new_videos_with_a_language(tmp_path):
+    path = tmp_path / "library.db"
+    _v1_database(path)
+    c = store.connect(path)
+
+    store.upsert_video(c, make_video("fresh", language="en"))
+
+    assert store.get_video(c, "fresh").language == "en"
+
+
+def test_video_language_defaults_to_none(conn):
+    store.upsert_video(conn, make_video())
+    assert store.get_video(conn, "abc123").language is None
+
+
+def test_upsert_keeps_the_stored_language_when_metadata_is_refreshed(conn):
+    store.upsert_video(conn, make_video(language="en"))
+    store.upsert_video(conn, make_video(title="Refreshed title"))  # language=None, like transcribe_one
+    v = store.get_video(conn, "abc123")
+    assert (v.title, v.language) == ("Refreshed title", "en")
+
+
+def test_upsert_fills_in_a_missing_language_but_never_overwrites_one(conn):
+    store.upsert_video(conn, make_video())
+    store.upsert_video(conn, make_video(language="bn"))
+    assert store.get_video(conn, "abc123").language == "bn"
+    store.upsert_video(conn, make_video(language="en"))
+    assert store.get_video(conn, "abc123").language == "bn"
+
+
+def test_set_video_language(conn):
+    store.upsert_video(conn, make_video())
+    store.set_video_language(conn, "abc123", "en")
+    assert store.get_video(conn, "abc123").language == "en"
+
+
+def test_list_videos_filters_by_language(conn):
+    store.upsert_video(conn, make_video("e1", language="en"))
+    store.upsert_video(conn, make_video("e2", language="en"))
+    store.upsert_video(conn, make_video("b1", language="bn"))
+    store.upsert_video(conn, make_video("u1"))
+
+    assert {v.id for v in store.list_videos(conn, language="en")} == {"e1", "e2"}
+    assert {v.id for v in store.list_videos(conn, language="bn")} == {"b1"}
+    assert len(store.list_videos(conn)) == 4
+
+
+def test_fts_search_is_case_insensitive_for_english(conn):
+    store.upsert_video(conn, make_video())
+    store.replace_segments(conn, "abc123", [
+        store.Segment(idx=0, start_s=0, end_s=5, text="Welcome to the Kubernetes tutorial"),
+    ])
+    hits = store.search_fts(conn, "kubernetes")
+    assert len(hits) == 1 and hits[0].video_id == "abc123"
+
+
+def test_fts_search_finds_english_word_stems_by_substring(conn):
+    store.upsert_video(conn, make_video())
+    store.replace_segments(conn, "abc123", [
+        store.Segment(idx=0, start_s=0, end_s=5, text="We are transcribing videos today"),
+    ])
+    assert len(store.search_fts(conn, "transcrib")) == 1
+
+
+def test_fts_search_covers_both_languages_in_one_library(conn):
+    store.upsert_video(conn, make_video("en1", language="en"))
+    store.upsert_video(conn, make_video("bn1", language="bn"))
+    store.replace_segments(conn, "en1", [store.Segment(idx=0, start_s=0, end_s=5, text="visa interview tips")])
+    store.replace_segments(conn, "bn1", [store.Segment(idx=0, start_s=0, end_s=5, text="ভিসা ইন্টারভিউ টিপস")])
+
+    assert [h.video_id for h in store.search_fts(conn, "visa")] == ["en1"]
+    assert [h.video_id for h in store.search_fts(conn, "ভিসা")] == ["bn1"]
+
+
+# --- platform (schema v3) ------------------------------------------------------------
+
+def test_migration_marks_every_existing_video_youtube(tmp_path):
+    """Before Facebook support bytx only handled YouTube, so the column default
+    is right for every row that predates it."""
+    path = tmp_path / "library.db"
+    _v1_database(path)
+
+    c = store.connect(path)
+
+    assert {v.id: v.platform for v in store.list_videos(c)} == {
+        "asr1": "youtube", "subs1": "youtube", "queued1": "youtube", "failed1": "youtube",
+    }
+
+
+def test_v2_database_gains_the_platform_column_and_keeps_its_rows(tmp_path):
+    path = tmp_path / "library.db"
+    _v1_database(path)
+    c = store.connect(path)
+    c.executescript(
+        "ALTER TABLE videos DROP COLUMN platform;"
+        "UPDATE schema_version SET version = 2;"
+    )
+    c.commit()
+    c.close()
+
+    c = store.connect(path)
+
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION
+    assert store.get_video(c, "asr1").platform == "youtube"
+
+
+def test_video_platform_defaults_to_youtube_and_is_stored(conn):
+    store.upsert_video(conn, make_video())
+    store.upsert_video(conn, make_video("fb_123456789012345", platform="facebook"))
+    assert store.get_video(conn, "abc123").platform == "youtube"
+    assert store.get_video(conn, "fb_123456789012345").platform == "facebook"
+
+
+def test_upsert_keeps_the_stored_platform_when_metadata_is_refreshed(conn):
+    store.upsert_video(conn, make_video("fb_123456789012345", platform="facebook"))
+    store.upsert_video(conn, make_video("fb_123456789012345", title="Refreshed"))  # platform defaulted
+    v = store.get_video(conn, "fb_123456789012345")
+    assert (v.title, v.platform) == ("Refreshed", "facebook")
+
+
+def test_list_videos_filters_by_platform(conn):
+    store.upsert_video(conn, make_video("aaaaaaaaaaa"))
+    store.upsert_video(conn, make_video("fb_123456789012345", platform="facebook"))
+    assert [v.id for v in store.list_videos(conn, platform="facebook")] == ["fb_123456789012345"]
+    assert [v.id for v in store.list_videos(conn, platform="youtube")] == ["aaaaaaaaaaa"]
+    assert len(store.list_videos(conn)) == 2

@@ -145,3 +145,58 @@ def test_summarize_video_english_language_instruction():
     video = store.Video(id="v1", url="u1")
     summarize.summarize_video(client, cfg, video, segs)
     assert "English" in client.chat_calls[0]
+
+
+# --- summary language --------------------------------------------------------------
+
+def test_auto_language_summarizes_an_english_video_in_english():
+    cfg = make_config(language="auto")
+    client = FakeOllama(replies=["A short summary"])
+    video = store.Video(id="v1", url="u1", language="en")
+
+    summarize.summarize_video(client, cfg, video, make_segments(3))
+
+    assert "Write your response in English." in client.chat_calls[0]
+    assert "Bangla" not in client.chat_calls[0]
+
+
+def test_auto_language_summarizes_a_bangla_video_in_bangla():
+    cfg = make_config(language="auto")
+    client = FakeOllama()
+    video = store.Video(id="v1", url="u1", language="bn")
+
+    summarize.summarize_video(client, cfg, video, make_segments(3))
+
+    assert "Write your response in Bangla." in client.chat_calls[0]
+
+
+def test_explicit_summary_language_overrides_the_video_language():
+    cfg = make_config(language="bn")
+    client = FakeOllama()
+    video = store.Video(id="v1", url="u1", language="en")
+
+    summarize.summarize_video(client, cfg, video, make_segments(3))
+
+    assert "Write your response in Bangla." in client.chat_calls[0]
+
+
+def test_auto_language_for_a_video_with_no_recorded_language_falls_back_to_bangla():
+    assert summarize.summary_language(make_config(language="auto"), store.Video(id="v", url="u")) == "bn"
+
+
+def test_auto_language_applies_to_every_map_and_reduce_call():
+    cfg = make_config(language="auto", map_window_minutes=10)
+    client = FakeOllama(replies=["part one", "part two", "final"])
+    video = store.Video(id="v1", url="u1", title="Talk", language="en")
+
+    summarize.summarize_video(client, cfg, video, make_segments(20, seg_len=60.0))
+
+    assert len(client.chat_calls) == 3
+    assert all("Write your response in English." in call for call in client.chat_calls)
+
+
+def test_summary_language_for_an_unlisted_code_uses_the_code_itself():
+    cfg = make_config(language="fr")
+    client = FakeOllama()
+    summarize.summarize_video(client, cfg, store.Video(id="v", url="u"), make_segments(2))
+    assert "Write your response in fr." in client.chat_calls[0]

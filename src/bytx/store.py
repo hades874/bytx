@@ -4,7 +4,8 @@ Bangla words carry suffixes (e.g. বাংলাদেশ -> বাংলাদ
 uses FTS5's `trigram` tokenizer, which matches any substring rather than
 whole tokens. This means a search for the root word still finds inflected
 forms, at the cost of some false positives on short queries (mitigated by
-requiring queries of at least 3 characters).
+requiring queries of at least 3 characters). The same tokenizer is
+case-insensitive, so English queries work without any extra handling.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -34,6 +35,8 @@ CREATE TABLE IF NOT EXISTS videos (
     description TEXT,
     source TEXT,
     asr_model TEXT,
+    language TEXT,
+    platform TEXT NOT NULL DEFAULT 'youtube',
     status TEXT NOT NULL DEFAULT 'queued',
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -108,6 +111,8 @@ class Video:
     description: str | None = None
     source: str | None = None
     asr_model: str | None = None
+    language: str | None = None
+    platform: str = "youtube"
     status: str = "queued"
     error: str | None = None
     attempts: int = 0
@@ -156,7 +161,27 @@ def init_db(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
+    elif row[0] < SCHEMA_VERSION:
+        _migrate(conn, row[0])
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
+    if from_version < 2:
+        # v2 adds videos.language. Before it, bytx only handled Bangla, so every
+        # existing row (queued ones included) is Bangla. From now on NULL means
+        # "not decided yet" (queued with `--lang auto`), so nothing may stay NULL.
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
+        if "language" not in columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN language TEXT")
+        conn.execute("UPDATE videos SET language = 'bn' WHERE language IS NULL")
+    if from_version < 3:
+        # v3 adds videos.platform. Before it, bytx only handled YouTube, so the
+        # column's default ('youtube') is right for every existing row.
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
+        if "platform" not in columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN platform TEXT NOT NULL DEFAULT 'youtube'")
 
 
 @contextmanager
@@ -175,11 +200,11 @@ def upsert_video(conn: sqlite3.Connection, video: Video) -> None:
     conn.execute(
         """
         INSERT INTO videos (id, url, title, channel, channel_id, upload_date,
-                             duration, description, source, asr_model, status,
-                             error, attempts)
+                             duration, description, source, asr_model, language,
+                             platform, status, error, attempts)
         VALUES (:id, :url, :title, :channel, :channel_id, :upload_date,
-                :duration, :description, :source, :asr_model, :status,
-                :error, :attempts)
+                :duration, :description, :source, :asr_model, :language,
+                :platform, :status, :error, :attempts)
         ON CONFLICT(id) DO UPDATE SET
             url=excluded.url,
             title=COALESCE(excluded.title, videos.title),
@@ -188,6 +213,7 @@ def upsert_video(conn: sqlite3.Connection, video: Video) -> None:
             upload_date=COALESCE(excluded.upload_date, videos.upload_date),
             duration=COALESCE(excluded.duration, videos.duration),
             description=COALESCE(excluded.description, videos.description),
+            language=COALESCE(videos.language, excluded.language),
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         """,
         vars(video),
@@ -209,6 +235,8 @@ def list_videos(
     conn: sqlite3.Connection,
     status: str | None = None,
     channel_id: str | None = None,
+    language: str | None = None,
+    platform: str | None = None,
 ) -> list[Video]:
     query = "SELECT * FROM videos WHERE 1=1"
     params: list[str] = []
@@ -218,6 +246,12 @@ def list_videos(
     if channel_id is not None:
         query += " AND channel_id = ?"
         params.append(channel_id)
+    if language is not None:
+        query += " AND language = ?"
+        params.append(language)
+    if platform is not None:
+        query += " AND platform = ?"
+        params.append(platform)
     query += " ORDER BY created_at ASC"
     rows = conn.execute(query, params).fetchall()
     return [Video.from_row(r) for r in rows]
@@ -256,6 +290,15 @@ def set_video_source(conn: sqlite3.Connection, video_id: str, source: str, asr_m
         "UPDATE videos SET source = ?, asr_model = ?, "
         "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
         (source, asr_model, video_id),
+    )
+    conn.commit()
+
+
+def set_video_language(conn: sqlite3.Connection, video_id: str, language: str) -> None:
+    conn.execute(
+        "UPDATE videos SET language = ?, "
+        "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+        (language, video_id),
     )
     conn.commit()
 
