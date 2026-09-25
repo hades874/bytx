@@ -364,21 +364,63 @@ def test_migration_marks_every_existing_video_youtube(tmp_path):
     }
 
 
+_V2_VIDEOS_TABLE = """
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version(version) VALUES (2);
+CREATE TABLE videos (
+    id TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT,
+    channel TEXT,
+    channel_id TEXT,
+    upload_date TEXT,
+    duration REAL,
+    description TEXT,
+    source TEXT,
+    asr_model TEXT,
+    language TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+INSERT INTO videos (id, url, title, language, status) VALUES
+    ('en1', 'u1', 'English one', 'en', 'summarized'),
+    ('bn1', 'u2', 'Bangla one', 'bn', 'queued');
+"""
+
+
 def test_v2_database_gains_the_platform_column_and_keeps_its_rows(tmp_path):
+    """A library.db exactly as bytx wrote it after English support, before Facebook."""
     path = tmp_path / "library.db"
-    _v1_database(path)
-    c = store.connect(path)
-    c.executescript(
-        "ALTER TABLE videos DROP COLUMN platform;"
-        "UPDATE schema_version SET version = 2;"
-    )
+    c = sqlite3.connect(str(path))
+    c.executescript(_V2_VIDEOS_TABLE)
     c.commit()
     c.close()
 
     c = store.connect(path)
 
     assert c.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION
-    assert store.get_video(c, "asr1").platform == "youtube"
+    assert {v.id: (v.platform, v.language) for v in store.list_videos(c)} == {
+        "en1": ("youtube", "en"), "bn1": ("youtube", "bn"),
+    }
+    store.upsert_video(c, make_video("fb_123456789012345", platform="facebook"))  # and takes new rows
+    assert store.get_video(c, "fb_123456789012345").platform == "facebook"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("first\nsecond", "first"),
+        ("\n  \n  padded  \nnext", "padded"),
+        ("", None),
+        ("   \n ", None),
+        (None, None),
+    ],
+)
+def test_first_line(text, expected):
+    assert store.first_line(text) == expected
 
 
 def test_video_platform_defaults_to_youtube_and_is_stored(conn):

@@ -291,3 +291,21 @@ def test_list_rejects_an_unknown_platform(config_path):
     result = runner.invoke(cli.app, ["list", "--platform", "vimeo", "--config", config_path])
     assert result.exit_code == 1
     assert "Unknown platform 'vimeo'" in result.output
+
+
+@pytest.mark.parametrize("flag", ["facebook", "Facebook", " FACEBOOK "])
+def test_list_platform_filter_ignores_case(config_path, tmp_path, flag):
+    _seed_library(tmp_path)
+    result = runner.invoke(cli.app, ["list", "--platform", flag, "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "fb_123456789012345" in result.output and "aaaaaaaaaaa" not in result.output
+
+
+def test_doctor_says_deno_is_only_needed_for_youtube(config_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda tool: None)
+    result = runner.invoke(cli.app, ["doctor", "--config", config_path])
+    assert "deno not found on PATH (needed for YouTube; Facebook works without it)" in result.output
+    assert "ffmpeg not found on PATH" in result.output
+    assert "ffmpeg not found on PATH (needed" not in result.output  # the note is deno's alone

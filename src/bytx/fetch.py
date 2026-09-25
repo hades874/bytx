@@ -27,15 +27,6 @@ _CHANNEL_ROOT_RE = re.compile(
 _KNOWN_TABS = ("videos", "shorts", "streams", "playlists")
 
 
-def extract_video_id(url: str) -> str | None:
-    """The id a video at `url` is stored under (bare for YouTube, `fb_<id>` for
-    Facebook), if the URL carries one, without any network call. Used to dedupe
-    already-queued videos cheaply during `bytx add`.
-    """
-    ref = platforms.parse_video_ref(url)
-    return ref.id if ref else None
-
-
 @dataclass
 class VideoInfo:
     id: str
@@ -93,7 +84,8 @@ def _flatten_entries(info: dict) -> list[str]:
         if url and not url.startswith("http"):
             url = None
         # YouTube's flat entries carry just the id; other extractors give full URLs.
-        if not url and vid and (entry.get("ie_key") or "youtube").lower() == "youtube":
+        ie_key = entry.get("ie_key")
+        if not url and vid and (not ie_key or platforms.platform_of_extractor(ie_key) == platforms.YOUTUBE):
             url = f"https://www.youtube.com/watch?v={vid}"
         if url:
             urls.append(url)
@@ -156,7 +148,7 @@ def get_video_info(url: str, cfg: Config) -> VideoInfo:
     title = info.get("title")
     if not title and platform == platforms.FACEBOOK:
         # Facebook videos often have no title; their caption (the description) stands in.
-        title = _first_line(description)
+        title = store.first_line(description)
     return VideoInfo(
         id=platforms.storage_id(platform, str(info["id"])),
         url=webpage_url,
@@ -172,30 +164,12 @@ def get_video_info(url: str, cfg: Config) -> VideoInfo:
 
 
 def _platform_of_info(info: dict, url: str) -> str:
-    extractor = (info.get("extractor_key") or info.get("extractor") or "").lower()
-    if extractor.startswith("facebook"):
-        return platforms.FACEBOOK
-    if extractor.startswith("youtube"):
-        return platforms.YOUTUBE
-    return platforms.platform_of_url(url) or platforms.YOUTUBE
-
-
-def _first_line(text: str | None) -> str | None:
-    for line in (text or "").splitlines():
-        if line.strip():
-            return line.strip()
-    return None
-
-
-def resolve_opaque_url(url: str, cfg: Config) -> VideoInfo | None:
-    """Looks up a link that carries no video id of its own (fb.watch/xyz,
-    facebook.com/share/v/xyz) to learn which video it points at. None when
-    yt-dlp can't fetch it (deleted, private without cookies, ...).
-    """
-    try:
-        return get_video_info(url, cfg)
-    except Exception:  # noqa: BLE001 - yt-dlp raises many kinds of errors
-        return None
+    extractor = info.get("extractor_key") or info.get("extractor")
+    return (
+        platforms.platform_of_extractor(extractor)
+        or platforms.platform_of_url(url)
+        or platforms.YOUTUBE
+    )
 
 
 def download_audio(url: str, out_dir: Path, cfg: Config) -> Path:

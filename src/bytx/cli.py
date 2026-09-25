@@ -42,8 +42,7 @@ def _conn(cfg: Config):
 
 
 _LANG_CHOICES = ", ".join(langs.SUPPORTED)
-_PLATFORMS = (platforms.YOUTUBE, platforms.FACEBOOK)
-_PLATFORM_CHOICES = ", ".join(_PLATFORMS)
+_PLATFORM_CHOICES = ", ".join(platforms.SUPPORTED)
 
 
 def _parse_lang(value: str | None, allow_auto: bool = False) -> str | None:
@@ -61,6 +60,17 @@ def _parse_lang(value: str | None, allow_auto: bool = False) -> str | None:
     return code
 
 
+def _parse_platform(value: str | None) -> str | None:
+    """CLI --platform value -> platform name; None when the option was not given."""
+    if value is None:
+        return None
+    name = value.strip().lower()
+    if name not in platforms.SUPPORTED:
+        console.print(f"[red]Unknown platform {value!r}. Choose from: {_PLATFORM_CHOICES}.[/red]")
+        raise typer.Exit(1)
+    return name
+
+
 def _fmt_hms(seconds: float) -> str:
     seconds = max(0, int(seconds))
     h, rem = divmod(seconds, 3600)
@@ -76,12 +86,13 @@ def doctor(config: str | None = _config_option) -> None:
 
     import shutil
 
-    for tool in ("ffmpeg", "deno"):
+    # deno is the JS runtime yt-dlp needs for YouTube only; Facebook works without it.
+    for tool, note in (("ffmpeg", ""), ("deno", " (needed for YouTube; Facebook works without it)")):
         path = shutil.which(tool)
         if path:
             console.print(f"[green]OK[/green]  {tool}: {path}")
         else:
-            console.print(f"[red]MISSING[/red]  {tool} not found on PATH")
+            console.print(f"[red]MISSING[/red]  {tool} not found on PATH{note}")
             ok = False
 
     try:
@@ -286,9 +297,7 @@ def list_videos_cmd(
 ) -> None:
     """List videos in the library."""
     language = _parse_lang(lang)
-    if platform is not None and platform not in _PLATFORMS:
-        console.print(f"[red]Unknown platform {platform!r}. Choose from: {_PLATFORM_CHOICES}.[/red]")
-        raise typer.Exit(1)
+    platform = _parse_platform(platform)
     cfg = _load(config)
     conn = _conn(cfg)
     videos = store.list_videos(

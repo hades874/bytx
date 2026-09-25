@@ -20,7 +20,7 @@ def summary_language(cfg: Config, video: store.Video) -> str:
     """`summarize.language`, or the video's own language when it is "auto"."""
     if cfg.summarize.language != "auto":
         return cfg.summarize.language
-    return video.language or "bn"
+    return video.language or langs.BANGLA
 
 
 def window_segments(

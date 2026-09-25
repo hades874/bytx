@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from bytx import fetch, ledger, pipeline, store
+from bytx import fetch, ledger, pipeline, platforms, store
 from bytx.config import (
     AsrConfig,
     AsrModelConfig,
@@ -173,7 +173,7 @@ def patch_fetch(monkeypatch, tmp_path, *, human_subs: dict[str, list[store.Segme
     downloads: list[str] = []
 
     def fake_get_video_info(url, cfg):
-        vid = fetch.extract_video_id(url)
+        vid = platforms.parse_video_ref(url).id
         if vid in info_failures:
             raise RuntimeError(f"metadata fetch failed for {vid}")
         return fetch.VideoInfo(
@@ -183,7 +183,7 @@ def patch_fetch(monkeypatch, tmp_path, *, human_subs: dict[str, list[store.Segme
         )
 
     def fake_download_audio(url, out_dir, cfg):
-        vid = fetch.extract_video_id(url)
+        vid = platforms.parse_video_ref(url).id
         downloads.append(vid)
         out_dir.mkdir(parents=True, exist_ok=True)
         p = out_dir / f"{vid}.webm"
@@ -986,7 +986,7 @@ def test_add_targets_resolves_an_opaque_facebook_link(conn, tmp_path, monkeypatc
     short = "https://fb.watch/abcDEF12/"
     monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [short])
     monkeypatch.setattr(
-        pipeline.fetch, "resolve_opaque_url",
+        pipeline.fetch, "get_video_info",
         lambda url, cfg: fetch.VideoInfo(
             id=FB_ID, url=FB_URL, title=None, channel=None, channel_id=None,
             upload_date=None, duration=None, description=None, platform="facebook",
@@ -1002,11 +1002,17 @@ def test_add_targets_skips_an_opaque_link_that_cannot_be_resolved(conn, tmp_path
     cfg = make_config(tmp_path)
     short = "https://fb.watch/gone/"
     monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [short])
-    monkeypatch.setattr(pipeline.fetch, "resolve_opaque_url", lambda url, cfg: None)
+
+    def login_wall(url, cfg):
+        raise RuntimeError("Cannot parse data: login required")
+
+    monkeypatch.setattr(pipeline.fetch, "get_video_info", login_wall)
 
     assert pipeline.add_targets(conn, cfg, ["t"]) == []
     assert store.list_videos(conn) == []
     assert short in caplog.text
+    assert "login required" in caplog.text  # the real reason, not a generic message
+    assert "cookies_from_browser" in caplog.text  # and what to do about it
 
 
 def test_add_targets_skips_unsupported_sites_instead_of_queueing_the_raw_url(conn, tmp_path, monkeypatch, caplog):

@@ -63,9 +63,20 @@ def test_ref_from_id_inverts_the_storage_id(ref):
     assert platforms.ref_from_id(ref.id) == ref
 
 
-def test_platform_of_reads_the_prefix():
-    assert platforms.platform_of("fb_123456789012345") == FACEBOOK
-    assert platforms.platform_of("aaaaaaaaaaa") == YOUTUBE
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("Facebook", FACEBOOK),
+        ("FacebookReel", FACEBOOK),
+        ("Youtube", YOUTUBE),
+        ("YoutubeTab", YOUTUBE),
+        ("", None),
+        (None, None),
+        ("Generic", None),
+    ],
+)
+def test_platform_of_extractor(key, expected):
+    assert platforms.platform_of_extractor(key) == expected
 
 
 @pytest.mark.parametrize(
