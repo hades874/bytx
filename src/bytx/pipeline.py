@@ -8,42 +8,78 @@ finished videos are skipped and nothing is redone.
 Stage 1 (transcribe) uses the whole GPU for faster-whisper; the model is
 unloaded before stage 2/3 touch Ollama, so the two never compete for the
 4GB of VRAM at the same time.
+
+Each video has a language (bn or en) that picks its ASR model and which
+uploader subtitles are used. It is set with `bytx add --lang` (default:
+`asr.default_language`) and stored on the video row. Whisper's language ID and
+YouTube's metadata both mislabel Bangla speech that is full of English words
+as English, so neither is used. `--lang auto` instead queues the video with no
+language and the run decides it by transcribing a sample with the Bangla model
+(see langdetect.py).
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
-from . import export, fetch, ledger, rag, store, summarize
+from . import export, fetch, langdetect, ledger, platforms, rag, store, summarize
 from .config import Config
 from .llm import OllamaClient
-from .transcribe import Transcriber, TranscribeStats
+from .transcribe import TranscriberPool, TranscribeStats
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class RunSummary:
+    detected: int = 0
     transcribed: int = 0
     indexed: int = 0
     summarized: int = 0
     failed: int = 0
 
 
-def add_targets(conn, cfg: Config, targets: list[str]) -> list[str]:
+AUTO = "auto"  # add_targets(language=AUTO): decide each video's language at run time
+
+
+def add_targets(
+    conn, cfg: Config, targets: list[str], language: str | None = None
+) -> list[str]:
     """Expands URLs/playlists/channels/text-file targets into individual
-    video URLs and inserts new queued rows. Already-known video ids are
-    skipped. Returns the list of newly queued video ids.
+    video URLs and inserts new queued rows in `language` (default:
+    `asr.default_language`; `AUTO` leaves it unset for `run` to detect).
+    Already-known video ids are skipped. Returns the list of newly queued
+    video ids.
     """
+    if language == AUTO:
+        language = None
+    else:
+        language = language or cfg.asr.default_language
     seen_ids = ledger.load_seen_ids(ledger.ledger_path(cfg))
     new_ids: list[str] = []
     for target in targets:
         for url in fetch.expand_to_video_urls(target, cfg):
-            vid = fetch.extract_video_id(url) or url
+            ref = platforms.parse_video_ref(url)
+            if ref is not None:
+                vid, platform = ref.id, ref.platform
+            elif platforms.platform_of_url(url) is None:
+                logger.warning("Skipping %s: only YouTube and Facebook videos are supported", url)
+                continue
+            else:
+                # A link with no id of its own (fb.watch/xyz, /share/v/xyz): fetch it to learn the video.
+                info = fetch.resolve_opaque_url(url, cfg)
+                if info is None:
+                    logger.warning("Skipping %s: could not tell which video it points to", url)
+                    continue
+                vid, platform, url = info.id, info.platform, info.url
             if store.video_exists(conn, vid) or vid in seen_ids:
                 continue
-            store.upsert_video(conn, store.Video(id=vid, url=url, status="queued"))
+            store.upsert_video(
+                conn,
+                store.Video(id=vid, url=url, status="queued", language=language, platform=platform),
+            )
             new_ids.append(vid)
     return new_ids
 
@@ -70,15 +106,46 @@ def _warn_on_suspect_asr(info: fetch.VideoInfo, stats: TranscribeStats) -> None:
         )
 
 
-def transcribe_one(conn, cfg: Config, transcriber: Transcriber, video: store.Video) -> None:
-    """Runs stage 1 for a single video: fetch metadata, prefer human
-    subtitles over ASR, store segments, write exports, delete audio.
+def detect_one(conn, cfg: Config, pool: TranscriberPool, video: store.Video) -> Path:
+    """Decides the language of a video queued with `--lang auto` and stores
+    it. The audio is downloaded for this, so its path is returned for the
+    transcription to reuse instead of downloading it a second time.
+    """
+    audio_path = fetch.download_audio(video.url, cfg.paths.audio_dir, cfg)
+    try:
+        # Always sampled with the Bangla model: what it writes is the signal.
+        text = pool.for_language("bn").sample_text(audio_path, "bn")
+        detection = langdetect.classify(text, cfg.asr.auto_english_below, cfg.asr.default_language)
+        if not detection.confident:
+            logger.warning(
+                "%s: too little speech to detect the language (%d words); using %r. "
+                "Pass --lang to choose.", video.id, detection.words, detection.language,
+            )
+        else:
+            logger.info(
+                "%s: %.1f%% Bangla function words in %d sampled words -> %s",
+                video.id, 100 * detection.rate, detection.words, detection.language,
+            )
+        store.set_video_language(conn, video.id, detection.language)
+    except BaseException:
+        audio_path.unlink(missing_ok=True)
+        raise
+    return audio_path
+
+
+def transcribe_one(
+    conn, cfg: Config, pool: TranscriberPool, video: store.Video, audio_path: Path | None = None
+) -> None:
+    """Runs stage 1 for a single video: fetch metadata, prefer human subtitles
+    in the video's language over ASR, store segments, write exports, delete audio.
+    `audio_path` is audio that is already downloaded (see `detect_one`).
     """
     info = fetch.get_video_info(video.url, cfg)
     store.upsert_video(
         conn,
         store.Video(
-            id=info.id,
+            id=video.id,
+            platform=info.platform,
             url=info.url,
             title=info.title,
             channel=info.channel,
@@ -89,38 +156,44 @@ def transcribe_one(conn, cfg: Config, transcriber: Transcriber, video: store.Vid
         ),
     )
 
-    use_human_subs = info.human_subtitle_url is not None and not cfg.fetch.force_asr
-    if use_human_subs:
-        segments = fetch.fetch_human_subtitle_segments(info.human_subtitle_url)
-        source, asr_model = "human_subs", None
-    else:
-        audio_path = fetch.download_audio(info.url, cfg.paths.audio_dir, cfg)
-        try:
-            result = transcriber.transcribe(audio_path)
+    language = video.language or cfg.asr.default_language
+    store.set_video_language(conn, video.id, language)
+
+    try:
+        sub_url = None if cfg.fetch.force_asr else info.human_subtitles.get(language)
+        if sub_url:
+            segments = fetch.fetch_human_subtitle_segments(sub_url)
+            source, asr_model = "human_subs", None
+        else:
+            transcriber = pool.for_language(language)  # fails first if no model handles the language
+            if audio_path is None:
+                audio_path = fetch.download_audio(info.url, cfg.paths.audio_dir, cfg)
+            result = transcriber.transcribe(audio_path, language)
             segments = result.segments
             _warn_on_suspect_asr(info, result.stats)
-        finally:
+            source, asr_model = "asr", transcriber.model_cfg.key
+    finally:
+        if audio_path is not None:
             audio_path.unlink(missing_ok=True)
-        source, asr_model = "asr", cfg.asr.model
 
-    store.replace_segments(conn, info.id, segments)
-    store.set_video_source(conn, info.id, source, asr_model)
-    updated = store.get_video(conn, info.id)
+    store.replace_segments(conn, video.id, segments)
+    store.set_video_source(conn, video.id, source, asr_model)
+    updated = store.get_video(conn, video.id)
     assert updated is not None
     export.write_info_json(cfg.paths.videos_dir, updated)
     export.write_all(cfg.paths.videos_dir, updated, segments)
-    store.set_video_status(conn, info.id, "transcribed")
+    store.set_video_status(conn, video.id, "transcribed")
 
     # Best-effort extras: the transcript is already safe in the DB, so a
     # locked file or over-long path here must not mark the video failed.
     try:
         export.write_transcript_copy(cfg.paths.transcribed_files_dir, updated, segments)
     except Exception:  # noqa: BLE001
-        logger.warning("Could not write transcript copy for %s", info.id, exc_info=True)
+        logger.warning("Could not write transcript copy for %s", video.id, exc_info=True)
     try:
         ledger.append_entry(ledger.ledger_path(cfg), updated)
     except Exception:  # noqa: BLE001
-        logger.warning("Could not update transcription ledger for %s", info.id, exc_info=True)
+        logger.warning("Could not update transcription ledger for %s", video.id, exc_info=True)
 
 
 def index_one(conn, cfg: Config, client: OllamaClient, video: store.Video) -> None:
@@ -159,15 +232,32 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
     if limit is not None:
         queued = queued[:limit]
     if queued:
-        model_cfg = cfg.asr.active_model()
-        model_dir = cfg.paths.models_dir / cfg.asr.model
-        transcriber = Transcriber(model_dir, model_cfg, cfg.asr)
-        _run_stage(
-            conn, queued, "transcribe",
-            lambda v: transcribe_one(conn, cfg, transcriber, v),
-            result, "transcribed",
-        )
-        transcriber.unload()
+        pool = TranscriberPool(cfg)
+        # Audio downloaded while detecting a language, kept for the transcription.
+        audio: dict[str, Path] = {}
+
+        undecided = [v for v in queued if v.language is None]
+        if undecided:
+            _run_stage(
+                conn, undecided, "detect language",
+                lambda v: audio.__setitem__(v.id, detect_one(conn, cfg, pool, v)),
+                result, "detected",
+            )
+            queued = [v for v in (store.get_video(conn, v.id) for v in queued) if v and v.status == "queued"]
+
+        # Group by language (stable, so queue order holds within a language) so
+        # each ASR model is loaded once instead of once per switch.
+        queued.sort(key=lambda v: v.language or cfg.asr.default_language)
+        try:
+            _run_stage(
+                conn, queued, "transcribe",
+                lambda v: transcribe_one(conn, cfg, pool, v, audio_path=audio.get(v.id)),
+                result, "transcribed",
+            )
+        finally:
+            for path in audio.values():  # transcribe_one deletes its own; this catches early failures
+                path.unlink(missing_ok=True)
+            pool.unload()
 
     to_index = store.list_videos(conn, status="transcribed")
     if to_index:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
+import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -41,49 +44,83 @@ def make_config(tmp_path: Path, *, summarize_enabled: bool = True) -> Config:
             model="m", device="auto", compute_type="float16", beam_size=1,
             vad_filter=False, vad_min_silence_ms=500, without_timestamps=True, condition_on_previous_text=False,
             repetition_penalty=1.1, no_repeat_ngram_size=3, initial_prompt="",
-            models={"m": AsrModelConfig(key="m", source="org/m", language="bn")},
+            models={
+                # "m" is a Bangla-only model, "e" a multilingual one (English).
+                "m": AsrModelConfig(key="m", source="org/m", language="bn"),
+                "e": AsrModelConfig(key="e", source="org/e", language=""),
+            },
+            language_models={"bn": "m", "en": "e"},
         ),
         fetch=FetchConfig(
             force_asr=False, sleep_interval_s=0, max_sleep_interval_s=0, cookies_from_browser=""
         ),
         ollama=OllamaConfig(host="http://x", embed_model="bge-m3", chat_model="gemma3:4b", num_ctx=8192),
         rag=RagConfig(chunk_seconds=75, chunk_overlap_seconds=15, top_k=8),
-        summarize=SummarizeConfig(enabled=summarize_enabled, map_window_minutes=10, language="bn"),
+        summarize=SummarizeConfig(enabled=summarize_enabled, map_window_minutes=10, language="auto"),
     )
 
 
-class FakeTranscriber:
-    """Replaces bytx.pipeline.Transcriber. Records construction and calls;
-    per-video results/errors are looked up by audio path stem (~video id).
-    """
+class FakeModel:
+    """One model handed out by FakePool. Per-video results/errors are looked up
+    by audio path stem (~video id)."""
 
-    instances: list[FakeTranscriber] = []
+    def __init__(self, pool: FakePool, model_cfg: AsrModelConfig):
+        self.pool = pool
+        self.model_cfg = model_cfg
 
-    def __init__(self, model_dir, model_cfg, asr_cfg):
-        self.model_dir = model_dir
-        self.unloaded = False
-        self.calls: list[Path] = []
-        FakeTranscriber.instances.append(self)
+    def sample_text(self, audio_path: Path, language: str | None = None) -> str:
+        self.pool.sampled.append((self.model_cfg.key, audio_path.stem, language))
+        if audio_path.stem in _SAMPLE_FAILURES:
+            raise RuntimeError(_SAMPLE_FAILURES[audio_path.stem])
+        return _SAMPLE_TEXT.get(audio_path.stem, "")
 
-    def transcribe(self, audio_path: Path) -> TranscribeResult:
-        self.calls.append(audio_path)
+    def transcribe(self, audio_path: Path, language: str | None = None) -> TranscribeResult:
+        self.pool.transcribed.append((self.model_cfg.key, audio_path, language))
         if audio_path.stem in _TRANSCRIBE_FAILURES:
             raise RuntimeError(_TRANSCRIBE_FAILURES[audio_path.stem])
         segs = _TRANSCRIBE_RESULTS.get(
             audio_path.stem, [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="default text")]
         )
         return TranscribeResult(
-            segments=segs, device="cuda", compute_type="float16", language="bn",
+            segments=segs, device="cuda", compute_type="float16", language=language,
             stats=_TRANSCRIBE_STATS.get(audio_path.stem, TranscribeStats(speech_seconds=60.0)),
         )
 
+
+class FakePool:
+    """Replaces bytx.pipeline.TranscriberPool. Records which model was loaded
+    when (like the real pool, only one at a time), plus transcribe calls."""
+
+    instances: list[FakePool] = []
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.current: str | None = None
+        self.loads: list[str] = []  # model keys, in the order they were loaded
+        self.transcribed: list[tuple[str, Path, str | None]] = []  # (model key, audio, language)
+        self.sampled: list[tuple[str, str, str | None]] = []  # (model key, video id, language)
+        self.unloaded = False
+        FakePool.instances.append(self)
+
+    def _switch(self, model_cfg: AsrModelConfig) -> FakeModel:
+        if self.current != model_cfg.key:
+            self.current = model_cfg.key
+            self.loads.append(model_cfg.key)
+        return FakeModel(self, model_cfg)
+
+    def for_language(self, language: str) -> FakeModel:
+        return self._switch(self.cfg.asr.model_for_language(language))
+
     def unload(self) -> None:
         self.unloaded = True
+        self.current = None
 
 
 _TRANSCRIBE_RESULTS: dict[str, list[store.Segment]] = {}
 _TRANSCRIBE_FAILURES: dict[str, str] = {}
 _TRANSCRIBE_STATS: dict[str, TranscribeStats] = {}
+_SAMPLE_TEXT: dict[str, str] = {}  # video id -> text the Bangla model writes for its sampled audio
+_SAMPLE_FAILURES: dict[str, str] = {}
 
 
 class FakeOllamaClient:
@@ -111,23 +148,29 @@ class FakeOllamaClient:
 
 @pytest.fixture(autouse=True)
 def _reset_fakes(monkeypatch):
-    FakeTranscriber.instances = []
+    FakePool.instances = []
     FakeOllamaClient.instances = []
     _TRANSCRIBE_RESULTS.clear()
     _TRANSCRIBE_FAILURES.clear()
     _TRANSCRIBE_STATS.clear()
-    monkeypatch.setattr(pipeline, "Transcriber", FakeTranscriber)
+    _SAMPLE_TEXT.clear()
+    _SAMPLE_FAILURES.clear()
+    monkeypatch.setattr(pipeline, "TranscriberPool", FakePool)
     monkeypatch.setattr(pipeline, "OllamaClient", FakeOllamaClient)
     yield
 
 
 def patch_fetch(monkeypatch, tmp_path, *, human_subs: dict[str, list[store.Segment]] | None = None,
-                 info_failures: set[str] | None = None):
+                 info_failures: set[str] | None = None,
+                 human_sub_lang: str = "bn"):
     """Wires fetch.get_video_info / download_audio / fetch_human_subtitle_segments
     to deterministic fakes based on the video id extracted from the URL.
+    `human_subs` videos get one uploader subtitle track in `human_sub_lang`.
+    Returns the list of video ids whose audio gets downloaded, in order.
     """
     human_subs = human_subs or {}
     info_failures = info_failures or set()
+    downloads: list[str] = []
 
     def fake_get_video_info(url, cfg):
         vid = fetch.extract_video_id(url)
@@ -136,12 +179,12 @@ def patch_fetch(monkeypatch, tmp_path, *, human_subs: dict[str, list[store.Segme
         return fetch.VideoInfo(
             id=vid, url=url, title=f"Title {vid}", channel="Chan", channel_id="c1",
             upload_date="20260101", duration=60.0, description="desc",
-            human_subtitle_url=(f"http://subs/{vid}.vtt" if vid in human_subs else None),
-            human_subtitle_lang=("bn" if vid in human_subs else None),
+            human_subtitles=({human_sub_lang: f"http://subs/{vid}.vtt"} if vid in human_subs else {}),
         )
 
     def fake_download_audio(url, out_dir, cfg):
         vid = fetch.extract_video_id(url)
+        downloads.append(vid)
         out_dir.mkdir(parents=True, exist_ok=True)
         p = out_dir / f"{vid}.webm"
         p.write_bytes(b"fake audio")
@@ -154,6 +197,7 @@ def patch_fetch(monkeypatch, tmp_path, *, human_subs: dict[str, list[store.Segme
     monkeypatch.setattr(pipeline.fetch, "get_video_info", fake_get_video_info)
     monkeypatch.setattr(pipeline.fetch, "download_audio", fake_download_audio)
     monkeypatch.setattr(pipeline.fetch, "fetch_human_subtitle_segments", fake_fetch_human_subtitle_segments)
+    return downloads
 
 
 def video_url(vid: str) -> str:
@@ -212,7 +256,7 @@ def test_transcribe_one_warns_when_clips_still_truncated(conn, tmp_path, monkeyp
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
 
     with caplog.at_level("WARNING", logger="bytx.pipeline"):
-        pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+        pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
 
     assert "token limit" in caplog.text
     assert store.get_video(conn, vid).status == "transcribed"  # a warning, not a failure
@@ -226,7 +270,7 @@ def test_transcribe_one_warns_when_little_speech_detected(conn, tmp_path, monkey
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
 
     with caplog.at_level("WARNING", logger="bytx.pipeline"):
-        pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+        pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
 
     assert "detected as speech" in caplog.text
 
@@ -238,7 +282,7 @@ def test_transcribe_one_no_warning_for_healthy_asr(conn, tmp_path, monkeypatch, 
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
 
     with caplog.at_level("WARNING", logger="bytx.pipeline"):
-        pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+        pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
 
     assert caplog.text == ""
 
@@ -251,10 +295,10 @@ def test_transcribe_one_prefers_human_subs(conn, tmp_path, monkeypatch):
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
     video = store.get_video(conn, vid)
 
-    transcriber = FakeTranscriber(None, None, None)
-    pipeline.transcribe_one(conn, cfg, transcriber, video)
+    pool = FakePool(cfg)
+    pipeline.transcribe_one(conn, cfg, pool, video)
 
-    assert transcriber.calls == []  # ASR must not run when human subs exist
+    assert pool.transcribed == []  # ASR must not run when human subs exist
     stored = store.get_segments(conn, vid)
     assert [s.text for s in stored] == ["মানুষের সাবটাইটেল"]
     updated = store.get_video(conn, vid)
@@ -275,10 +319,10 @@ def test_transcribe_one_writes_human_facing_copy_and_ledger_entry(conn, tmp_path
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
     video = store.get_video(conn, vid)
 
-    transcriber = FakeTranscriber(None, None, None)
-    pipeline.transcribe_one(conn, cfg, transcriber, video)
+    pool = FakePool(cfg)
+    pipeline.transcribe_one(conn, cfg, pool, video)
 
-    out_dir = cfg.paths.transcribed_files_dir / f"Chan - Title {vid}"
+    out_dir = cfg.paths.transcribed_files_dir / date.today().isoformat() / f"Chan - Title {vid}"
     transcript = out_dir / "transcript.txt"
     assert transcript.exists()
     assert transcript.read_text(encoding="utf-8") == "মানুষের সাবটাইটেল\n"
@@ -295,11 +339,11 @@ def test_transcribe_one_uses_asr_and_deletes_audio(conn, tmp_path, monkeypatch):
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
     video = store.get_video(conn, vid)
 
-    transcriber = FakeTranscriber(None, None, None)
-    pipeline.transcribe_one(conn, cfg, transcriber, video)
+    pool = FakePool(cfg)
+    pipeline.transcribe_one(conn, cfg, pool, video)
 
-    assert len(transcriber.calls) == 1
-    audio_path = transcriber.calls[0]
+    assert len(pool.transcribed) == 1
+    _key, audio_path, _language = pool.transcribed[0]
     assert not audio_path.exists()  # deleted after transcription
 
     stored = store.get_segments(conn, vid)
@@ -316,10 +360,10 @@ def test_transcribe_one_deletes_audio_even_on_transcribe_failure(conn, tmp_path,
     _TRANSCRIBE_FAILURES[vid] = "boom"
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
     video = store.get_video(conn, vid)
-    transcriber = FakeTranscriber(None, None, None)
+    pool = FakePool(cfg)
 
     with pytest.raises(RuntimeError, match="boom"):
-        pipeline.transcribe_one(conn, cfg, transcriber, video)
+        pipeline.transcribe_one(conn, cfg, pool, video)
 
     audio_path = cfg.paths.audio_dir / f"{vid}.webm"
     assert not audio_path.exists()
@@ -373,7 +417,7 @@ def test_run_happy_path_all_stages(conn, tmp_path, monkeypatch):
     assert result.failed == 0
     for v in vids:
         assert store.get_video(conn, v).status == "summarized"
-    assert FakeTranscriber.instances[0].unloaded is True
+    assert FakePool.instances[0].unloaded is True
 
 
 def test_run_continues_after_one_video_fails(conn, tmp_path, monkeypatch):
@@ -440,7 +484,7 @@ def test_run_resumes_without_reloading_asr_model_when_nothing_queued(conn, tmp_p
 
     result = pipeline.run(conn, cfg)
 
-    assert FakeTranscriber.instances == []  # never constructed: no queued work
+    assert FakePool.instances == []  # never constructed: no queued work
     assert result.indexed == 1
     assert store.get_video(conn, vid).status == "summarized"
 
@@ -499,6 +543,513 @@ def test_transcribe_one_extras_failure_does_not_fail_video(conn, tmp_path, monke
     module = pipeline.export if target == "write_transcript_copy" else pipeline.ledger
     monkeypatch.setattr(module, target, boom)
 
-    pipeline.transcribe_one(conn, cfg, FakeTranscriber(None, None, None), store.get_video(conn, vid))
+    pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
 
     assert store.get_video(conn, vid).status == "transcribed"
+
+
+# --- languages -------------------------------------------------------------------
+
+def _queue(conn, vid: str, language: str | None = None) -> store.Video:
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued", language=language))
+    return store.get_video(conn, vid)
+
+
+def test_add_targets_stores_the_requested_language(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [video_url("aaaaaaaaaaa")])
+
+    pipeline.add_targets(conn, cfg, ["t"], language="en")
+
+    assert store.get_video(conn, "aaaaaaaaaaa").language == "en"
+
+
+def test_add_targets_defaults_to_the_configured_language(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [video_url("aaaaaaaaaaa")])
+
+    pipeline.add_targets(conn, cfg, ["t"])
+
+    assert store.get_video(conn, "aaaaaaaaaaa").language == "bn"
+
+
+def test_add_targets_default_language_follows_the_config(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    cfg = dataclasses.replace(cfg, asr=dataclasses.replace(cfg.asr, default_language="en"))
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [video_url("aaaaaaaaaaa")])
+
+    pipeline.add_targets(conn, cfg, ["t"])
+
+    assert store.get_video(conn, "aaaaaaaaaaa").language == "en"
+
+
+def test_english_video_uses_the_english_model(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid, language="en"))
+
+    assert [(key, lang) for key, _audio, lang in pool.transcribed] == [("e", "en")]
+    updated = store.get_video(conn, vid)
+    assert (updated.language, updated.source, updated.asr_model) == ("en", "asr", "e")
+
+
+def test_bangla_video_uses_the_bangla_model(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid, language="bn"))
+
+    assert [(key, lang) for key, _audio, lang in pool.transcribed] == [("m", "bn")]
+    assert store.get_video(conn, vid).asr_model == "m"
+
+
+def test_video_queued_before_language_support_is_treated_as_the_default_language(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid))  # language NULL, as in an old queue
+
+    assert [(key, lang) for key, _audio, lang in pool.transcribed] == [("m", "bn")]
+    assert store.get_video(conn, vid).language == "bn"
+
+
+def test_youtube_metadata_never_overrides_the_chosen_language(conn, tmp_path, monkeypatch):
+    """Regression: YouTube tags real Bangla videos in this library en-US. The video
+    must stay Bangla (the default) whatever the metadata claims."""
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    monkeypatch.setattr(
+        fetch, "get_video_info",
+        lambda url, cfg: fetch.VideoInfo(
+            id=vid, url=url, title="t", channel="c", channel_id="c1", upload_date="20260101",
+            duration=60.0, description="d",
+        ),
+    )
+    monkeypatch.setattr(pipeline.fetch, "download_audio", lambda url, out_dir, cfg: _fake_audio(out_dir, vid))
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid))
+
+    assert pool.transcribed[0][0] == "m"
+
+
+def _fake_audio(out_dir, vid):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{vid}.webm"
+    path.write_bytes(b"fake audio")
+    return path
+
+
+def test_human_subs_in_the_videos_language_are_used_without_downloading_audio(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    subs = [store.Segment(idx=0, start_s=0.0, end_s=2.0, text="uploader captions")]
+    downloads = patch_fetch(monkeypatch, tmp_path, human_subs={vid: subs}, human_sub_lang="en")
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid, language="en"))
+
+    assert downloads == []
+    assert pool.transcribed == []
+    assert [s.text for s in store.get_segments(conn, vid)] == ["uploader captions"]
+    assert store.get_video(conn, vid).source == "human_subs"
+
+
+def test_human_subs_in_another_language_are_not_used(conn, tmp_path, monkeypatch):
+    """A Bangla video that only carries English subtitles (a translation) must
+    be transcribed from its audio, not have the English subs stored as its text."""
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    subs = [store.Segment(idx=0, start_s=0.0, end_s=2.0, text="english translation")]
+    patch_fetch(monkeypatch, tmp_path, human_subs={vid: subs}, human_sub_lang="en")
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid, language="bn"))
+
+    assert [(key, lang) for key, _audio, lang in pool.transcribed] == [("m", "bn")]
+    assert store.get_video(conn, vid).source == "asr"
+
+
+def test_force_asr_ignores_human_subs_for_any_language(conn, tmp_path, monkeypatch):
+    cfg = dataclasses.replace(
+        make_config(tmp_path),
+        fetch=FetchConfig(force_asr=True, sleep_interval_s=0, max_sleep_interval_s=0, cookies_from_browser=""),
+    )
+    vid = "aaaaaaaaaaa"
+    subs = [store.Segment(idx=0, start_s=0.0, end_s=2.0, text="uploader captions")]
+    patch_fetch(monkeypatch, tmp_path, human_subs={vid: subs}, human_sub_lang="en")
+    pool = FakePool(cfg)
+
+    pipeline.transcribe_one(conn, cfg, pool, _queue(conn, vid, language="en"))
+
+    assert len(pool.transcribed) == 1
+    assert store.get_video(conn, vid).source == "asr"
+
+
+def test_unmapped_language_fails_before_downloading_audio(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    downloads = patch_fetch(monkeypatch, tmp_path)
+    video = _queue(conn, "aaaaaaaaaaa", language="fr")
+
+    with pytest.raises(ValueError, match="No ASR model is configured for language 'fr'"):
+        pipeline.transcribe_one(conn, cfg, FakePool(cfg), video)
+
+    assert downloads == []
+
+
+def test_run_fails_unsupported_language_but_continues_queue(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    bad, good = "aaaaaaaaaaa", "bbbbbbbbbbb"
+    patch_fetch(monkeypatch, tmp_path)
+    _queue(conn, bad, language="fr")
+    _queue(conn, good, language="bn")
+
+    result = pipeline.run(conn, cfg)
+
+    assert result.failed == 1
+    assert "language 'fr'" in store.get_video(conn, bad).error
+    assert store.get_video(conn, good).status == "summarized"
+
+
+def test_run_groups_videos_by_language_to_minimise_model_loads(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    order = [("aaaaaaaaaaa", "en"), ("bbbbbbbbbbb", "bn"), ("ccccccccccc", "en"), ("ddddddddddd", "bn")]
+    patch_fetch(monkeypatch, tmp_path)
+    for vid, lang in order:
+        _queue(conn, vid, language=lang)
+
+    result = pipeline.run(conn, cfg)
+
+    assert result.transcribed == 4
+    pool = FakePool.instances[0]
+    assert pool.loads == ["m", "e"]  # each model loaded once, not once per switch
+    assert [audio.stem for _k, audio, _l in pool.transcribed] == [
+        "bbbbbbbbbbb", "ddddddddddd", "aaaaaaaaaaa", "ccccccccccc",
+    ]
+    assert pool.unloaded is True
+
+
+def test_run_puts_videos_without_a_language_in_the_default_language_group(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    _queue(conn, "aaaaaaaaaaa", language="en")
+    _queue(conn, "bbbbbbbbbbb")  # language NULL -> bn
+
+    pipeline.run(conn, cfg)
+
+    assert FakePool.instances[0].loads == ["m", "e"]
+
+
+def test_language_survives_refresh_of_metadata(conn, tmp_path, monkeypatch):
+    """transcribe_one upserts fresh metadata (language=None) over the row; that
+    must not wipe a language chosen earlier, e.g. by --lang."""
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    video = _queue(conn, vid, language="en")
+
+    pipeline.transcribe_one(conn, cfg, FakePool(cfg), video)
+
+    assert store.get_video(conn, vid).language == "en"
+
+
+def test_language_recorded_in_ledger_and_json_exports(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+
+    pipeline.transcribe_one(conn, cfg, FakePool(cfg), _queue(conn, vid, language="en"))
+
+    assert "  language: en\n" in ledger.ledger_path(cfg).read_text(encoding="utf-8")
+    out_dir = cfg.paths.videos_dir / vid
+    assert json.loads((out_dir / "info.json").read_text(encoding="utf-8"))["language"] == "en"
+    assert json.loads((out_dir / "transcript.json").read_text(encoding="utf-8"))["language"] == "en"
+
+
+# --- --lang auto (language detection from a transcribed sample) ---------------------------
+
+BANGLISH_SAMPLE = (
+    "আপনিরা যারা হচ্ছে বাংলাদেশে ব্যাচেলর কম্পিট করেছেন এবং হচ্ছে বিদেশে আসতে যাচ্ছেন "
+    "তাদের জন্য এই ভিডিওটা কারণ আমি নিজেও এসেছি এবং আমার অনেক কিছু মনে হয়েছে যেটা আপনাদের বলা দরকার "
+) * 3
+ENGLISH_SAMPLE = (
+    "আলার্ভ রিভান্ড বালকাম টু কথার স্লোক আই হোপ ইউ অল আর ডুইং আমেইজিং সো "
+    "হোয়েন আই ওয়াজ ইন হাই স্কুল আই ওয়াজ ভেরি ইন্টারেস্টেড ইন হাউ থিংস ওয়ার্ক "
+) * 3
+
+
+def _samples(monkeypatch, **by_video: str) -> None:
+    """What the Bangla model 'writes' for each auto video's sampled audio."""
+    _SAMPLE_TEXT.clear()
+    _SAMPLE_TEXT.update(by_video)
+
+
+def test_add_targets_auto_leaves_the_language_undecided(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [video_url("aaaaaaaaaaa")])
+
+    pipeline.add_targets(conn, cfg, ["t"], language=pipeline.AUTO)
+
+    assert store.get_video(conn, "aaaaaaaaaaa").language is None
+
+
+def test_auto_video_with_bangla_speech_stays_bangla_and_reuses_the_audio(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    downloads = patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{vid: BANGLISH_SAMPLE})
+    _queue(conn, vid)
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.detected, result.transcribed, result.failed) == (1, 1, 0)
+    updated = store.get_video(conn, vid)
+    assert (updated.language, updated.asr_model, updated.source) == ("bn", "m", "asr")
+    assert downloads == [vid]  # detection and transcription shared one download
+    assert not (cfg.paths.audio_dir / f"{vid}.webm").exists()
+
+
+def test_auto_video_with_english_speech_goes_to_the_english_model(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    downloads = patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{vid: ENGLISH_SAMPLE})
+    _queue(conn, vid)
+
+    pipeline.run(conn, cfg)
+
+    updated = store.get_video(conn, vid)
+    assert (updated.language, updated.asr_model) == ("en", "e")
+    pool = FakePool.instances[0]
+    assert [(k, lang) for k, _a, lang in pool.transcribed] == [("e", "en")]
+    assert downloads == [vid]
+
+
+def test_auto_detection_always_samples_with_the_bangla_model(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    cfg = dataclasses.replace(cfg, asr=dataclasses.replace(cfg.asr, default_language="en"))
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{vid: BANGLISH_SAMPLE})
+    _queue(conn, vid)
+
+    pipeline.run(conn, cfg)
+
+    pool = FakePool.instances[0]
+    assert pool.sampled == [("m", vid, "bn")]  # what the Bangla model writes is the signal
+    assert store.get_video(conn, vid).language == "bn"
+
+
+def test_run_mixes_known_and_auto_videos_without_extra_model_loads(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    known_en, auto_en, auto_bn = "aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"
+    patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{auto_en: ENGLISH_SAMPLE, auto_bn: BANGLISH_SAMPLE})
+    _queue(conn, known_en, language="en")
+    _queue(conn, auto_en)
+    _queue(conn, auto_bn)
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.detected, result.transcribed) == (2, 3)
+    pool = FakePool.instances[0]
+    assert pool.loads == ["m", "e"]  # detection used the Bangla model, then bn group, then en group
+    assert [s for s in (store.get_video(conn, v).language for v in (known_en, auto_en, auto_bn))] == ["en", "en", "bn"]
+
+
+def test_auto_with_too_little_speech_uses_the_default_language_and_says_so(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{vid: "হ্যালো এভরিওয়ান"})
+    _queue(conn, vid)
+
+    with caplog.at_level("WARNING", logger="bytx.pipeline"):
+        pipeline.run(conn, cfg)
+
+    assert store.get_video(conn, vid).language == "bn"
+    assert "too little speech" in caplog.text
+    assert "--lang" in caplog.text
+
+
+def test_auto_detection_failure_fails_only_that_video_and_cleans_up(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    bad, good = "aaaaaaaaaaa", "bbbbbbbbbbb"
+    patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{good: BANGLISH_SAMPLE})
+    _SAMPLE_FAILURES[bad] = "sampling exploded"
+    _queue(conn, bad)
+    _queue(conn, good)
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.failed, result.transcribed) == (1, 1)
+    assert store.get_video(conn, bad).status == "failed"
+    assert "sampling exploded" in store.get_video(conn, bad).error
+    assert store.get_video(conn, good).status == "summarized"
+    assert not list(cfg.paths.audio_dir.glob("*.webm"))  # neither video left audio behind
+
+
+def test_downloaded_audio_is_removed_when_the_transcription_stage_fails_early(conn, tmp_path, monkeypatch):
+    """The audio fetched for detection must not leak if the metadata fetch (the
+    first thing transcribe_one does) fails before the audio is ever used."""
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path, info_failures={vid})
+    _samples(monkeypatch, **{vid: BANGLISH_SAMPLE})
+    _queue(conn, vid)
+
+    result = pipeline.run(conn, cfg)
+
+    assert result.failed == 1
+    assert not list(cfg.paths.audio_dir.glob("*.webm"))
+
+
+def test_auto_video_with_human_subs_in_the_detected_language_uses_them(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    subs = [store.Segment(idx=0, start_s=0.0, end_s=2.0, text="uploader captions")]
+    patch_fetch(monkeypatch, tmp_path, human_subs={vid: subs}, human_sub_lang="en")
+    _samples(monkeypatch, **{vid: ENGLISH_SAMPLE})
+    _queue(conn, vid)
+
+    pipeline.run(conn, cfg)
+
+    updated = store.get_video(conn, vid)
+    assert (updated.language, updated.source) == ("en", "human_subs")
+    assert FakePool.instances[0].transcribed == []
+    assert not (cfg.paths.audio_dir / f"{vid}.webm").exists()  # the detection audio is discarded
+
+
+def test_run_with_no_auto_videos_never_samples_or_downloads_extra(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    downloads = patch_fetch(monkeypatch, tmp_path)
+    _queue(conn, "aaaaaaaaaaa", language="bn")
+
+    result = pipeline.run(conn, cfg)
+
+    assert result.detected == 0
+    assert FakePool.instances[0].sampled == []
+    assert downloads == ["aaaaaaaaaaa"]
+
+
+def test_auto_threshold_comes_from_config(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "aaaaaaaaaaa"
+    patch_fetch(monkeypatch, tmp_path)
+    _samples(monkeypatch, **{vid: BANGLISH_SAMPLE})  # ~30% Bangla function words
+    _queue(conn, vid)
+    strict = dataclasses.replace(cfg, asr=dataclasses.replace(cfg.asr, auto_english_below=0.9))
+
+    pipeline.run(conn, strict)
+
+    assert store.get_video(conn, vid).language == "en"  # 30% is below 90%
+
+
+# --- Facebook ---------------------------------------------------------------------------
+
+FB_ID = "fb_123456789012345"
+FB_URL = "https://www.facebook.com/watch/?v=123456789012345"
+
+
+def test_add_targets_queues_facebook_videos_with_a_prefixed_id_and_platform(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    urls = [video_url("aaaaaaaaaaa"), FB_URL]
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: urls)
+
+    new_ids = pipeline.add_targets(conn, cfg, ["some target"])
+
+    assert new_ids == ["aaaaaaaaaaa", FB_ID]
+    assert {v.id: v.platform for v in store.list_videos(conn)} == {
+        "aaaaaaaaaaa": "youtube", FB_ID: "facebook",
+    }
+    assert store.get_video(conn, FB_ID).url == FB_URL
+
+
+def test_add_targets_skips_a_known_facebook_video(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    store.upsert_video(conn, store.Video(id=FB_ID, url=FB_URL, platform="facebook", status="transcribed"))
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [FB_URL])
+
+    assert pipeline.add_targets(conn, cfg, ["t"]) == []
+
+
+def test_add_targets_resolves_an_opaque_facebook_link(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    short = "https://fb.watch/abcDEF12/"
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [short])
+    monkeypatch.setattr(
+        pipeline.fetch, "resolve_opaque_url",
+        lambda url, cfg: fetch.VideoInfo(
+            id=FB_ID, url=FB_URL, title=None, channel=None, channel_id=None,
+            upload_date=None, duration=None, description=None, platform="facebook",
+        ),
+    )
+
+    assert pipeline.add_targets(conn, cfg, ["t"]) == [FB_ID]
+    video = store.get_video(conn, FB_ID)
+    assert (video.url, video.platform) == (FB_URL, "facebook")  # the canonical URL, not the short link
+
+
+def test_add_targets_skips_an_opaque_link_that_cannot_be_resolved(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    short = "https://fb.watch/gone/"
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [short])
+    monkeypatch.setattr(pipeline.fetch, "resolve_opaque_url", lambda url, cfg: None)
+
+    assert pipeline.add_targets(conn, cfg, ["t"]) == []
+    assert store.list_videos(conn) == []
+    assert short in caplog.text
+
+
+def test_add_targets_skips_unsupported_sites_instead_of_queueing_the_raw_url(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: ["https://vimeo.com/1"])
+
+    assert pipeline.add_targets(conn, cfg, ["t"]) == []
+    assert store.list_videos(conn) == []
+    assert "https://vimeo.com/1" in caplog.text
+
+
+def test_transcribe_one_facebook_video_uses_asr_and_leaves_a_single_row(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    _TRANSCRIBE_RESULTS[FB_ID] = [store.Segment(idx=0, start_s=0.0, end_s=3.0, text="ফেসবুক")]
+    store.upsert_video(conn, store.Video(id=FB_ID, url=FB_URL, platform="facebook", status="queued"))
+    video = store.get_video(conn, FB_ID)
+
+    pipeline.transcribe_one(conn, cfg, FakePool(cfg), video)
+
+    assert [v.id for v in store.list_videos(conn)] == [FB_ID]
+    updated = store.get_video(conn, FB_ID)
+    assert (updated.status, updated.source, updated.platform) == ("transcribed", "asr", "facebook")
+    assert [s.text for s in store.get_segments(conn, FB_ID)] == ["ফেসবুক"]
+    assert (cfg.paths.videos_dir / FB_ID / "transcript.txt").exists()
+    assert f"- id: {FB_ID}" in ledger.ledger_path(cfg).read_text(encoding="utf-8")
+
+
+def test_transcribe_one_stores_under_the_queued_row_even_if_the_extractor_id_differs(conn, tmp_path, monkeypatch):
+    """The queued row is the video's identity. The old code upserted under
+    whatever id yt-dlp reported, leaving the queued row stuck beside a duplicate."""
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        pipeline.fetch, "get_video_info",
+        lambda url, cfg: fetch.VideoInfo(
+            id="someOtherId", url=url, title="T", channel="C", channel_id="c",
+            upload_date=None, duration=60.0, description=None,
+        ),
+    )
+    _TRANSCRIBE_RESULTS["aaaaaaaaaaa"] = [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="x")]
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="queued"))
+
+    pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, "aaaaaaaaaaa"))
+
+    assert [(v.id, v.status) for v in store.list_videos(conn)] == [("aaaaaaaaaaa", "transcribed")]

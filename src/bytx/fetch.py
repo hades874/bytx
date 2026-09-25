@@ -1,43 +1,39 @@
-"""YouTube interaction via yt-dlp: expanding URLs/playlists/channels/text
-files into individual video URLs, fetching metadata, downloading audio, and
-fetching uploader-made (human) Bangla subtitles when available.
+"""Video interaction via yt-dlp (YouTube and Facebook): expanding
+URLs/playlists/channels/text files into individual video URLs, fetching
+metadata, downloading audio, and fetching uploader-made (human) subtitles in a
+supported language when available.
 
 Only uploader subtitles (yt-dlp's `subtitles`, never `automatic_captions`)
 are treated as "human subs" — YouTube's auto-generated captions are lower
-quality than our ASR and are intentionally ignored.
+quality than our ASR and are intentionally ignored. Facebook videos have no
+uploader subtitles in yt-dlp, so they always go through ASR.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
 import yt_dlp
 
-from . import store
+from . import langs, platforms, store
 from .config import Config
-
-HUMAN_SUB_LANG_PREFIXES = ("bn",)
 
 _CHANNEL_ROOT_RE = re.compile(
     r"^https?://(www\.)?youtube\.com/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/?$"
 )
 _KNOWN_TABS = ("videos", "shorts", "streams", "playlists")
 
-_VIDEO_ID_RE = re.compile(
-    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/|live/)|youtu\.be/)([A-Za-z0-9_-]{11})"
-)
-
 
 def extract_video_id(url: str) -> str | None:
-    """Pulls the 11-character YouTube video id out of a URL, if present,
-    without any network call. Used to dedupe already-queued videos cheaply
-    during `bytx add`.
+    """The id a video at `url` is stored under (bare for YouTube, `fb_<id>` for
+    Facebook), if the URL carries one, without any network call. Used to dedupe
+    already-queued videos cheaply during `bytx add`.
     """
-    m = _VIDEO_ID_RE.search(url)
-    return m.group(1) if m else None
+    ref = platforms.parse_video_ref(url)
+    return ref.id if ref else None
 
 
 @dataclass
@@ -50,8 +46,9 @@ class VideoInfo:
     upload_date: str | None
     duration: float | None
     description: str | None
-    human_subtitle_url: str | None = None
-    human_subtitle_lang: str | None = None
+    # Uploader-made subtitle URLs by supported language code ("bn", "en").
+    human_subtitles: dict[str, str] = field(default_factory=dict)
+    platform: str = platforms.YOUTUBE
 
 
 def normalize_channel_url(url: str) -> str:
@@ -95,7 +92,8 @@ def _flatten_entries(info: dict) -> list[str]:
         url = entry.get("url") or entry.get("webpage_url")
         if url and not url.startswith("http"):
             url = None
-        if not url and vid:
+        # YouTube's flat entries carry just the id; other extractors give full URLs.
+        if not url and vid and (entry.get("ie_key") or "youtube").lower() == "youtube":
             url = f"https://www.youtube.com/watch?v={vid}"
         if url:
             urls.append(url)
@@ -128,16 +126,20 @@ def expand_to_video_urls(target: str, cfg: Config) -> list[str]:
     return [u for u in _flatten_entries(info) if u]
 
 
-def _pick_human_bn_subtitle(info: dict) -> tuple[str | None, str | None]:
-    subs = info.get("subtitles") or {}
-    for lang, formats in subs.items():
-        if not lang.lower().startswith(HUMAN_SUB_LANG_PREFIXES):
+def _collect_human_subtitles(info: dict) -> dict[str, str]:
+    """URL of the uploader-made subtitle track for each supported language.
+    The first track wins when a language has several variants (e.g. en, en-GB).
+    """
+    found: dict[str, str] = {}
+    for lang, formats in (info.get("subtitles") or {}).items():
+        code = langs.normalize(lang)
+        if code is None or code in found:
             continue
         vtt = next((f for f in formats if f.get("ext") == "vtt"), None)
         chosen = vtt or (formats[0] if formats else None)
         if chosen:
-            return chosen["url"], lang
-    return None, None
+            found[code] = chosen["url"]
+    return found
 
 
 def get_video_info(url: str, cfg: Config) -> VideoInfo:
@@ -148,19 +150,52 @@ def get_video_info(url: str, cfg: Config) -> VideoInfo:
     if info is None:
         raise RuntimeError(f"yt-dlp returned no info for {url}")
 
-    sub_url, sub_lang = _pick_human_bn_subtitle(info)
+    webpage_url = info.get("webpage_url", url)
+    platform = _platform_of_info(info, webpage_url)
+    description = info.get("description")
+    title = info.get("title")
+    if not title and platform == platforms.FACEBOOK:
+        # Facebook videos often have no title; their caption (the description) stands in.
+        title = _first_line(description)
     return VideoInfo(
-        id=info["id"],
-        url=info.get("webpage_url", url),
-        title=info.get("title"),
+        id=platforms.storage_id(platform, str(info["id"])),
+        url=webpage_url,
+        title=title,
         channel=info.get("channel") or info.get("uploader"),
-        channel_id=info.get("channel_id"),
+        channel_id=info.get("channel_id") or info.get("uploader_id"),
         upload_date=info.get("upload_date"),
         duration=info.get("duration"),
-        description=info.get("description"),
-        human_subtitle_url=sub_url,
-        human_subtitle_lang=sub_lang,
+        description=description,
+        human_subtitles=_collect_human_subtitles(info),
+        platform=platform,
     )
+
+
+def _platform_of_info(info: dict, url: str) -> str:
+    extractor = (info.get("extractor_key") or info.get("extractor") or "").lower()
+    if extractor.startswith("facebook"):
+        return platforms.FACEBOOK
+    if extractor.startswith("youtube"):
+        return platforms.YOUTUBE
+    return platforms.platform_of_url(url) or platforms.YOUTUBE
+
+
+def _first_line(text: str | None) -> str | None:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def resolve_opaque_url(url: str, cfg: Config) -> VideoInfo | None:
+    """Looks up a link that carries no video id of its own (fb.watch/xyz,
+    facebook.com/share/v/xyz) to learn which video it points at. None when
+    yt-dlp can't fetch it (deleted, private without cookies, ...).
+    """
+    try:
+        return get_video_info(url, cfg)
+    except Exception:  # noqa: BLE001 - yt-dlp raises many kinds of errors
+        return None
 
 
 def download_audio(url: str, out_dir: Path, cfg: Config) -> Path:

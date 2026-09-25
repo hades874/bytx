@@ -184,8 +184,9 @@ def test_get_video_info_picks_human_bn_subtitle():
     info = fetch.get_video_info(url, make_config())
     assert info.id == "abc123"
     assert info.title == "শিরোনাম"
-    assert info.human_subtitle_url == "http://x/bn.vtt"
-    assert info.human_subtitle_lang == "bn"
+    # Both supported languages are collected (the caller picks by the video's language),
+    # preferring the vtt format; automatic captions never appear.
+    assert info.human_subtitles == {"bn": "http://x/bn.vtt", "en": "http://x/en.vtt"}
 
 
 def test_get_video_info_no_human_subtitle_available():
@@ -198,8 +199,37 @@ def test_get_video_info_no_human_subtitle_available():
         "automatic_captions": {"bn": [{"ext": "vtt", "url": "http://x/auto-bn.vtt"}]},
     }
     info = fetch.get_video_info(url, make_config())
-    assert info.human_subtitle_url is None
-    assert info.human_subtitle_lang is None
+    assert info.human_subtitles == {}
+
+
+def _info_for(subtitles: dict, **extra) -> fetch.VideoInfo:
+    url = "https://www.youtube.com/watch?v=abc123"
+    _FakeYoutubeDL.responses[url] = {
+        "id": "abc123", "webpage_url": url, "title": "t", "subtitles": subtitles, **extra,
+    }
+    return fetch.get_video_info(url, make_config())
+
+
+def test_get_video_info_collects_english_subtitle_variants_first_wins():
+    info = _info_for({
+        "en-GB": [{"ext": "vtt", "url": "http://x/en-gb.vtt"}],
+        "en": [{"ext": "vtt", "url": "http://x/en.vtt"}],
+    })
+    assert info.human_subtitles == {"en": "http://x/en-gb.vtt"}
+
+
+def test_get_video_info_ignores_unsupported_subtitle_languages():
+    info = _info_for({
+        "hi": [{"ext": "vtt", "url": "http://x/hi.vtt"}],
+        "fr": [{"ext": "vtt", "url": "http://x/fr.vtt"}],
+        "en": [{"ext": "srv3", "url": "http://x/en.srv3"}],  # no vtt: falls back to the first format
+    })
+    assert info.human_subtitles == {"en": "http://x/en.srv3"}
+
+
+def test_get_video_info_english_only_subtitles_are_not_mistaken_for_bangla():
+    info = _info_for({"en": [{"ext": "vtt", "url": "http://x/en.vtt"}]})
+    assert "bn" not in info.human_subtitles
 
 
 # --- parse_vtt ----------------------------------------------------------------
@@ -241,3 +271,91 @@ def test_parse_vtt_strips_tags_and_skips_empty_cues():
 def test_parse_vtt_empty_text():
     assert fetch.parse_vtt("") == []
     assert fetch.parse_vtt("WEBVTT\n\n") == []
+
+
+# --- Facebook ------------------------------------------------------------------------
+
+FB_URL = "https://www.facebook.com/SomePage/videos/123456789012345"
+
+
+def _facebook_info(**overrides) -> dict:
+    info = {
+        "id": "123456789012345",
+        "extractor_key": "Facebook",
+        "webpage_url": FB_URL,
+        "title": "ফেসবুক ভিডিও",
+        "uploader": "Some Page",
+        "uploader_id": "SomePage",
+        "upload_date": "20260101",
+        "duration": 120.0,
+        "description": "caption line one\nline two",
+    }
+    info.update(overrides)
+    return info
+
+
+def test_extract_video_id_handles_both_platforms():
+    assert fetch.extract_video_id("https://youtu.be/aaaaaaaaaaa") == "aaaaaaaaaaa"
+    assert fetch.extract_video_id(FB_URL) == "fb_123456789012345"
+    assert fetch.extract_video_id("https://fb.watch/abc/") is None
+
+
+def test_get_video_info_for_a_facebook_video():
+    _FakeYoutubeDL.responses[FB_URL] = _facebook_info()
+    info = fetch.get_video_info(FB_URL, make_config())
+    assert info.id == "fb_123456789012345"
+    assert info.platform == "facebook"
+    assert info.url == FB_URL
+    assert info.title == "ফেসবুক ভিডিও"
+    assert info.channel == "Some Page"       # no `channel` key: falls back to the uploader
+    assert info.channel_id == "SomePage"     # ... and uploader_id
+    assert info.human_subtitles == {}        # nothing to prefer over ASR
+
+
+def test_facebook_video_without_a_title_is_named_by_its_caption():
+    _FakeYoutubeDL.responses[FB_URL] = _facebook_info(title=None)
+    assert fetch.get_video_info(FB_URL, make_config()).title == "caption line one"
+
+
+def test_facebook_video_with_no_title_or_caption_stays_untitled():
+    _FakeYoutubeDL.responses[FB_URL] = _facebook_info(title=None, description=None)
+    assert fetch.get_video_info(FB_URL, make_config()).title is None
+
+
+def test_youtube_video_info_keeps_its_bare_id_and_platform():
+    info = _info_for({})
+    assert (info.id, info.platform) == ("abc123", "youtube")
+
+
+def test_flat_entries_from_other_extractors_keep_their_own_urls():
+    url = "https://www.facebook.com/SomePage/videos"
+    _FakeYoutubeDL.responses[url] = {
+        "entries": [
+            {"id": "1", "ie_key": "Facebook", "url": "https://www.facebook.com/watch/?v=1"},
+            {"id": "2", "ie_key": "Facebook"},  # no usable URL: must not become a YouTube link
+            {"id": "v3", "ie_key": "Youtube"},
+        ]
+    }
+    assert fetch.expand_to_video_urls(url, make_config()) == [
+        "https://www.facebook.com/watch/?v=1",
+        "https://www.youtube.com/watch?v=v3",
+    ]
+
+
+def test_expand_a_facebook_video_url_is_left_alone():
+    _FakeYoutubeDL.responses[FB_URL] = {"webpage_url": FB_URL}
+    assert fetch.expand_to_video_urls(FB_URL, make_config()) == [FB_URL]
+    assert _FakeYoutubeDL.calls == [FB_URL]
+
+
+def test_resolve_opaque_url_returns_the_video_it_points_to():
+    short = "https://fb.watch/abcDEF12/"
+    _FakeYoutubeDL.responses[short] = _facebook_info()
+    info = fetch.resolve_opaque_url(short, make_config())
+    assert info is not None and info.id == "fb_123456789012345"
+
+
+def test_resolve_opaque_url_is_none_when_it_cannot_be_fetched():
+    short = "https://fb.watch/gone/"
+    _FakeYoutubeDL.responses[short] = None
+    assert fetch.resolve_opaque_url(short, make_config()) is None

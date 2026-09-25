@@ -50,6 +50,7 @@ def append_entry(path: Path, video: store.Video) -> None:
         f"  channel: {channel}\n"
         f"  title: {title}\n"
         f"  url: {video.url}\n"
+        f"  language: {video.language or 'unknown'}\n"
         f"  date: {date.today().isoformat()}\n\n"
     )
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
@@ -174,49 +175,112 @@ def test_sanitize_folder_name_falls_back_to_video_id_when_empty():
 
 # --- write_transcript_copy ---------------------------------------------------
 
+DAY = date(2026, 9, 25)
+
+
 def test_write_transcript_copy_writes_plain_text_only(tmp_path):
     video = make_video()
     segs = make_segments()
-    out_dir = export.write_transcript_copy(tmp_path, video, segs)
+    out_dir = export.write_transcript_copy(tmp_path, video, segs, today=DAY)
 
-    assert out_dir == tmp_path / "Test Channel - বাংলা লেকচার"
+    assert out_dir == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
     assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == export.to_txt(segs)
     assert (out_dir / ".video_id").read_text(encoding="utf-8") == "abc123"
     assert not (out_dir / "transcript.srt").exists()
     assert not (out_dir / "transcript.json").exists()
 
 
+def test_write_transcript_copy_defaults_to_today(tmp_path):
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments())
+
+    assert out_dir.parent == tmp_path / date.today().isoformat()
+
+
 def test_write_transcript_copy_rerun_same_video_overwrites_in_place(tmp_path):
     video = make_video()
-    export.write_transcript_copy(tmp_path, video, make_segments())
-    out_dir = export.write_transcript_copy(tmp_path, video, [store.Segment(idx=0, start_s=0, end_s=1, text="নতুন")])
+    export.write_transcript_copy(tmp_path, video, make_segments(), today=DAY)
+    out_dir = export.write_transcript_copy(
+        tmp_path, video, [store.Segment(idx=0, start_s=0, end_s=1, text="নতুন")], today=DAY
+    )
 
-    assert out_dir == tmp_path / "Test Channel - বাংলা লেকচার"
-    assert set(p.name for p in tmp_path.iterdir()) == {"Test Channel - বাংলা লেকচার"}
+    assert out_dir == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
+    assert set(p.name for p in tmp_path.iterdir()) == {"2026-09-25"}
     assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == "নতুন\n"
+
+
+def test_write_transcript_copy_rerun_on_later_day_keeps_original_date(tmp_path):
+    original = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
+    rerun = export.write_transcript_copy(
+        tmp_path, make_video(), make_segments(), today=date(2026, 9, 30)
+    )
+
+    assert rerun == original
+    assert [p.name for p in tmp_path.iterdir()] == ["2026-09-25"]
+
+
+def test_write_transcript_copy_new_day_gets_new_date_folder(tmp_path):
+    a = export.write_transcript_copy(tmp_path, make_video(id="abc123"), make_segments(), today=DAY)
+    b = export.write_transcript_copy(
+        tmp_path, make_video(id="xyz789"), make_segments(), today=date(2026, 9, 26)
+    )
+
+    assert a.parent.name == "2026-09-25"
+    assert b.parent.name == "2026-09-26"
+    assert a.name == b.name  # same title on different days is not a collision
 
 
 def test_write_transcript_copy_collision_appends_video_id(tmp_path):
     video_a = make_video(id="abc123")
     video_b = make_video(id="xyz789")
-    dir_a = export.write_transcript_copy(tmp_path, video_a, make_segments())
-    dir_b = export.write_transcript_copy(tmp_path, video_b, make_segments())
+    dir_a = export.write_transcript_copy(tmp_path, video_a, make_segments(), today=DAY)
+    dir_b = export.write_transcript_copy(tmp_path, video_b, make_segments(), today=DAY)
 
     assert dir_a != dir_b
-    assert dir_a == tmp_path / "Test Channel - বাংলা লেকচার"
-    assert dir_b == tmp_path / "Test Channel - বাংলা লেকচার (xyz789)"
+    assert dir_a == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
+    assert dir_b == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার (xyz789)"
 
 
 def test_write_transcript_copy_title_change_reuses_original_folder(tmp_path):
-    original = export.write_transcript_copy(tmp_path, make_video(), make_segments())
-    renamed = export.write_transcript_copy(tmp_path, make_video(title="নতুন শিরোনাম"), make_segments())
+    original = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
+    renamed = export.write_transcript_copy(
+        tmp_path, make_video(title="নতুন শিরোনাম"), make_segments(), today=DAY
+    )
 
     assert renamed == original
-    assert len([p for p in tmp_path.iterdir() if p.is_dir()]) == 1
+    assert len([p for p in original.parent.iterdir() if p.is_dir()]) == 1
+
+
+def test_write_transcript_copy_reuses_legacy_folder_directly_under_root(tmp_path):
+    legacy = tmp_path / "Test Channel - বাংলা লেকচার"
+    legacy.mkdir()
+    (legacy / ".video_id").write_text("abc123", encoding="utf-8")
+
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
+
+    assert out_dir == legacy
+    assert not (tmp_path / "2026-09-25").exists()
 
 
 def test_write_transcript_copy_ignores_folders_without_marker(tmp_path):
     (tmp_path / "unrelated").mkdir()
-    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments())
+    (tmp_path / "2026-09-25" / "unrelated").mkdir(parents=True)
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
 
-    assert out_dir == tmp_path / "Test Channel - বাংলা লেকচার"
+    assert out_dir == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
+
+
+def test_info_json_records_the_platform(tmp_path):
+    video = make_video(id="fb_123456789012345", platform="facebook")
+    path = export.write_info_json(tmp_path, video)
+    assert json.loads(path.read_text(encoding="utf-8"))["platform"] == "facebook"
+    assert path.parent.name == "fb_123456789012345"  # a legal folder name on Windows
+
+
+def test_transcript_copy_for_an_untitled_facebook_video_is_named_by_its_id(tmp_path):
+    video = make_video(id="fb_123456789012345", platform="facebook", title=None, channel=None)
+    segments = [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="hello")]
+
+    out_dir = export.write_transcript_copy(tmp_path, video, segments, today=date(2026, 1, 2))
+
+    assert out_dir.name == "fb_123456789012345 - fb_123456789012345"
+    assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == "hello\n"

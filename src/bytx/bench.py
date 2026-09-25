@@ -8,6 +8,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from rich.markup import escape
+
 from . import fetch
 from .config import Config
 from .transcribe import Transcriber
@@ -47,6 +49,7 @@ def run_bench(
     clip: str | None,
     ref_path: str | None,
     console,
+    language: str | None = None,
 ) -> None:
     console.print(f"Fetching audio for {url}...")
     bench_dir = cfg.paths.audio_dir / "bench"
@@ -66,7 +69,7 @@ def run_bench(
     try:
         for raw_key in model_keys:
             key = raw_key.strip()
-            _bench_one_model(cfg, key, audio_path, clip_duration, reference, console)
+            _bench_one_model(cfg, key, audio_path, clip_duration, reference, console, language)
     finally:
         audio_path.unlink(missing_ok=True)
 
@@ -78,6 +81,7 @@ def _bench_one_model(
     clip_duration: float | None,
     reference: str | None,
     console,
+    language: str | None = None,
 ) -> None:
     model_cfg = cfg.asr.models.get(key)
     if model_cfg is None:
@@ -93,9 +97,15 @@ def _bench_one_model(
 
     transcriber = Transcriber(model_dir, model_cfg, cfg.asr)
     t0 = time.time()
-    result = transcriber.transcribe(audio_path)
-    elapsed = time.time() - t0
-    transcriber.unload()
+    try:
+        # A pinned model uses its own language; a multilingual one defaults to English.
+        result = transcriber.transcribe(audio_path, language or model_cfg.language or "en")
+    except ValueError as exc:
+        console.print(f"[red]{key}: {escape(str(exc))}[/red]")
+        return
+    finally:
+        elapsed = time.time() - t0
+        transcriber.unload()
 
     text = " ".join(s.text for s in result.segments)
     duration = clip_duration or (result.segments[-1].end_s if result.segments else elapsed)

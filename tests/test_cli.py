@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import pytest
+from typer.testing import CliRunner
+
+from bytx import cli, fetch, store
+
+runner = CliRunner()
+
+_CONFIG = """
+[asr]
+model = "bn-model"
+[asr.language_models]
+bn = "bn-model"
+en = "multi"
+[asr.models.bn-model]
+source = "org/bn"
+language = "bn"
+[asr.models.multi]
+source = "org/multi"
+language = ""
+already_ct2 = true
+"""
+
+URL = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+
+
+@pytest.fixture()
+def config_path(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(_CONFIG, encoding="utf-8")
+    return str(path)
+
+
+def db(tmp_path):
+    return store.connect(tmp_path / "data" / "library.db")
+
+
+@pytest.fixture()
+def one_url(monkeypatch):
+    monkeypatch.setattr(fetch, "expand_to_video_urls", lambda target, cfg: [URL])
+
+
+# --- add --lang --------------------------------------------------------------------
+
+def test_add_defaults_to_the_configured_language(config_path, tmp_path, one_url):
+    result = runner.invoke(cli.app, ["add", URL, "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert db(tmp_path).execute("SELECT language FROM videos").fetchone()[0] == "bn"
+
+
+@pytest.mark.parametrize(("flag", "stored"), [("en", "en"), ("bn", "bn"), ("EN", "en"), ("English", "en")])
+def test_add_lang_is_stored_on_the_queued_video(config_path, tmp_path, one_url, flag, stored):
+    result = runner.invoke(cli.app, ["add", URL, "--lang", flag, "--config", config_path])
+    assert result.exit_code == 0, result.output
+    row = db(tmp_path).execute("SELECT language, status FROM videos").fetchone()
+    assert (row["language"], row["status"]) == (stored, "queued")
+
+
+@pytest.mark.parametrize("flag", ["auto", "AUTO"])
+def test_add_auto_queues_the_video_with_no_language_yet(config_path, tmp_path, one_url, flag):
+    result = runner.invoke(cli.app, ["add", URL, "--lang", flag, "--config", config_path])
+    assert result.exit_code == 0, result.output
+    row = db(tmp_path).execute("SELECT language, status FROM videos").fetchone()
+    assert (row["language"], row["status"]) == (None, "queued")  # run decides it
+
+
+def test_auto_is_only_for_add_not_for_filtering_or_benchmarking(config_path):
+    for args in (["list", "--lang", "auto"], ["bench", URL, "--lang", "auto"]):
+        result = runner.invoke(cli.app, [*args, "--config", config_path])
+        assert result.exit_code == 1, args
+        assert "Unsupported language 'auto'" in result.output
+
+
+def test_unsupported_language_error_lists_auto_only_where_it_is_accepted(config_path, one_url):
+    add = runner.invoke(cli.app, ["add", URL, "--lang", "fr", "--config", config_path])
+    listing = runner.invoke(cli.app, ["list", "--lang", "fr", "--config", config_path])
+    assert "auto, bn, en" in add.output
+    assert "auto" not in listing.output
+
+
+def test_add_rejects_an_unsupported_language_before_touching_anything(config_path, tmp_path, one_url):
+    result = runner.invoke(cli.app, ["add", URL, "--lang", "fr", "--config", config_path])
+    assert result.exit_code == 1
+    assert "Unsupported language 'fr'" in result.output
+    assert "bn, en" in result.output
+    assert not (tmp_path / "data").exists()  # rejected before the config was even loaded
+
+
+def test_add_force_asr_no_longer_crashes_and_reaches_the_run(config_path, one_url, monkeypatch):
+    """`cfg.fetch.force_asr = True` used to raise FrozenInstanceError."""
+    seen = []
+    monkeypatch.setattr(cli, "_do_run", lambda conn, cfg, limit, summarize_enabled=None: seen.append(cfg))
+
+    result = runner.invoke(cli.app, ["add", URL, "--force-asr", "--run", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert seen[0].fetch.force_asr is True
+
+
+def test_add_without_force_asr_keeps_the_config_value(config_path, one_url, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "_do_run", lambda conn, cfg, limit, summarize_enabled=None: seen.append(cfg))
+
+    runner.invoke(cli.app, ["add", URL, "--run", "--config", config_path])
+
+    assert seen[0].fetch.force_asr is False
+
+
+# --- list / show ---------------------------------------------------------------------
+
+def _seed(tmp_path):
+    conn = db(tmp_path)
+    store.upsert_video(conn, store.Video(id="en1", url="u1", title="T-en", language="en", status="transcribed"))
+    store.upsert_video(conn, store.Video(id="bn1", url="u2", title="T-bn", language="bn", status="transcribed"))
+    store.upsert_video(conn, store.Video(id="new1", url="u3", title="T-new", status="queued"))
+    conn.close()
+
+
+def test_list_shows_a_language_column(config_path, tmp_path):
+    _seed(tmp_path)
+    result = runner.invoke(cli.app, ["list", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "Lang" in result.output
+    assert "en1" in result.output and "bn1" in result.output
+
+
+def test_list_filters_by_language(config_path, tmp_path):
+    _seed(tmp_path)
+    result = runner.invoke(cli.app, ["list", "--lang", "en", "--config", config_path])
+    assert "en1" in result.output
+    assert "bn1" not in result.output
+    assert "new1" not in result.output
+
+
+def test_list_rejects_an_unsupported_language(config_path):
+    result = runner.invoke(cli.app, ["list", "--lang", "xx", "--config", config_path])
+    assert result.exit_code == 1
+    assert "Unsupported language" in result.output
+
+
+def test_show_prints_the_language_in_brackets(config_path, tmp_path):
+    _seed(tmp_path)
+    result = runner.invoke(cli.app, ["show", "en1", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "[en]" in result.output  # not swallowed as Rich markup
+
+
+# --- config errors keep their bracketed text -------------------------------------------
+
+def test_config_errors_are_not_eaten_by_rich_markup(tmp_path):
+    bad = tmp_path / "bad.toml"
+    bad.write_text(_CONFIG.replace('en = "multi"', 'fr = "multi"'), encoding="utf-8")
+    result = runner.invoke(cli.app, ["list", "--config", str(bad)])
+    assert result.exit_code == 1
+    assert "[asr.language_models]" in result.output
+    assert "unsupported language 'fr'" in result.output
+
+
+# --- doctor / setup cover every configured model ----------------------------------------
+
+class _NoOllama:
+    def __init__(self, cfg):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def is_reachable(self):
+        return False
+
+
+class _Done:
+    returncode = 0
+    stdout = "2026.01.01"
+
+
+def test_doctor_checks_each_configured_asr_model(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _Done())
+
+    result = runner.invoke(cli.app, ["doctor", "--config", config_path])
+
+    assert result.exit_code == 1  # models are not downloaded in the test dir
+    assert "ASR model 'bn-model' not found" in result.output
+    assert "ASR model 'multi' not found" in result.output
+
+
+def test_setup_converts_every_configured_model_then_pulls_ollama_models(config_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return _Done()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    converted = [c[2] for c in calls if c[1].endswith("convert_model.py")]
+    assert converted == ["bn-model", "multi"]
+    pulled = [c[2] for c in calls if c[:2] == ["ollama", "pull"]]
+    assert pulled == ["bge-m3", "gemma3:4b"]
+
+
+def test_setup_stops_when_a_model_fails_to_install(config_path, monkeypatch):
+    class Failed:
+        returncode = 1
+
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or Failed())
+
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])
+
+    assert result.exit_code == 1
+    assert len(calls) == 1  # did not go on to the next model or to Ollama
+
+
+# --- search output ----------------------------------------------------------------------
+
+@pytest.mark.parametrize(("text", "query"), [
+    ("Apple is so innovative year after year", "innovative"),
+    ("আপনারা যারা বাংলাদেশে ব্যাচেলর কম্পিট করেছেন", "বাংলাদেশ"),
+])
+def test_keyword_search_shows_the_matched_word(config_path, tmp_path, text, query):
+    """FTS marks the match as [word]; Rich used to eat that as a style tag and
+    print an empty snippet."""
+    conn = db(tmp_path)
+    store.upsert_video(conn, store.Video(id="v1", url="u", title="T", language="en", status="transcribed"))
+    store.replace_segments(conn, "v1", [store.Segment(idx=0, start_s=0, end_s=5, text=text)])
+    conn.close()
+
+    result = runner.invoke(cli.app, ["search", query, "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert f"[{query}" in result.output
+
+
+# --- Facebook / platform-aware output ---------------------------------------------------
+
+FB_URL = "https://www.facebook.com/watch/?v=123456789012345"
+
+
+def _seed_library(tmp_path):
+    conn = db(tmp_path)
+    for vid, url, platform in (
+        ("aaaaaaaaaaa", URL, "youtube"),
+        ("fb_123456789012345", FB_URL, "facebook"),
+    ):
+        store.upsert_video(
+            conn, store.Video(id=vid, url=url, title=f"T {vid}", channel="Chan", platform=platform, status="indexed")
+        )
+        store.replace_segments(
+            conn, vid, [store.Segment(idx=0, start_s=75.0, end_s=80.0, text="মজার কথা হচ্ছে এখানে")]
+        )
+    return conn
+
+
+def test_add_queues_a_facebook_url_with_its_platform(config_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch, "expand_to_video_urls", lambda target, cfg: [FB_URL])
+    result = runner.invoke(cli.app, ["add", FB_URL, "--config", config_path])
+    assert result.exit_code == 0, result.output
+    row = db(tmp_path).execute("SELECT id, platform, status FROM videos").fetchone()
+    assert (row["id"], row["platform"], row["status"]) == ("fb_123456789012345", "facebook", "queued")
+
+
+def test_search_links_each_hit_to_its_own_platform(config_path, tmp_path):
+    _seed_library(tmp_path)
+    result = runner.invoke(cli.app, ["search", "মজার", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "https://youtu.be/aaaaaaaaaaa?t=75" in result.output
+    assert "https://www.facebook.com/watch/?v=123456789012345&t=75" in result.output
+
+
+def test_list_shows_the_platform_and_can_filter_by_it(config_path, tmp_path):
+    _seed_library(tmp_path)
+
+    everything = runner.invoke(cli.app, ["list", "--config", config_path])
+    facebook_only = runner.invoke(cli.app, ["list", "--platform", "facebook", "--config", config_path])
+
+    assert "aaaaaaaaaaa" in everything.output and "fb_123456789012345" in everything.output
+    assert "facebook" in facebook_only.output
+    assert "fb_123456789012345" in facebook_only.output and "aaaaaaaaaaa" not in facebook_only.output
+
+
+def test_list_rejects_an_unknown_platform(config_path):
+    result = runner.invoke(cli.app, ["list", "--platform", "vimeo", "--config", config_path])
+    assert result.exit_code == 1
+    assert "Unknown platform 'vimeo'" in result.output

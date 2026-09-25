@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import store
+from . import platforms, store
 from .config import Config
 from .llm import OllamaClient
 
@@ -156,15 +156,16 @@ def semantic_search(
 def format_citation(hit: SemanticHit) -> str:
     minutes, seconds = divmod(int(hit.start_s), 60)
     title = hit.title or hit.video_id
-    return f"[{title} @ {minutes:02d}:{seconds:02d}] https://youtu.be/{hit.video_id}?t={int(hit.start_s)}"
+    return f"[{title} @ {minutes:02d}:{seconds:02d}] {platforms.timestamp_url(hit.video_id, hit.start_s)}"
 
 
 ASK_SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions about the contents of "
-    "YouTube video transcripts. Answer ONLY using the provided context "
+    "video transcripts. Answer ONLY using the provided context "
     "excerpts. If the context does not contain the answer, say so plainly "
-    "instead of guessing. Answer in Bangla, and after your answer, list the "
-    "citations you used exactly as given, one per line."
+    "instead of guessing. Answer in the same language as the user's question "
+    "(Bangla or English), and after your answer, list the citations you used "
+    "exactly as given, one per line."
 )
 
 

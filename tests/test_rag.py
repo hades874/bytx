@@ -258,3 +258,22 @@ def test_ask_returns_answer_and_hits(conn):
     assert answer == "এটাই উত্তর"
     assert len(hits) == 1
     assert len(client.chat_calls) == 1
+
+
+def test_ask_prompt_answers_in_the_language_of_the_question():
+    """A Bangla question about an English video (or the reverse) is answered in the
+    question's language; the prompt must not force Bangla any more."""
+    system = rag.build_ask_prompt("What is covered?", [])[0]["content"]
+    assert "same language as the user's question" in system
+    assert "Answer in Bangla" not in system
+    assert "Bangla or English" in system
+
+
+def test_ask_prompt_carries_english_context_and_question_unchanged():
+    hit = rag.SemanticHit(
+        video_id="v1", title="Visa tips", channel="C", start_s=65.0, end_s=80.0,
+        text="You need a valid passport", score=0.9,
+    )
+    messages = rag.build_ask_prompt("What do I need?", [hit])
+    assert "You need a valid passport" in messages[1]["content"]
+    assert "Question: What do I need?" in messages[1]["content"]
