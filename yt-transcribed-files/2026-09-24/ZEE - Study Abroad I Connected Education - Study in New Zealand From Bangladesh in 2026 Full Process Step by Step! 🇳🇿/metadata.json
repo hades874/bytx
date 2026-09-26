@@ -1,0 +1,27 @@
+{
+  "id": "j3zgI2kah0g",
+  "url": "https://www.youtube.com/watch?v=j3zgI2kah0g",
+  "platform": "youtube",
+  "title": "Study in New Zealand From Bangladesh in 2026: Full Process Step by Step! 🇳🇿",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260319",
+  "duration": 602.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 978,
+    "duration_s": 602.0,
+    "words_per_minute": 97.475,
+    "coverage": 0.996,
+    "gaps": [],
+    "segments": 20,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

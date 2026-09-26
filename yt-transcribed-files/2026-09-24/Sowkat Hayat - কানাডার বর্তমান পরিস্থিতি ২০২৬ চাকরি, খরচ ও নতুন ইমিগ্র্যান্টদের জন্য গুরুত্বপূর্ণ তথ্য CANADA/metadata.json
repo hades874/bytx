@@ -1,0 +1,27 @@
+{
+  "id": "UkLJpcuJOIA",
+  "url": "https://www.youtube.com/watch?v=UkLJpcuJOIA",
+  "platform": "youtube",
+  "title": "কানাডার বর্তমান পরিস্থিতি ২০২৬ | চাকরি, খরচ ও নতুন ইমিগ্র্যান্টদের জন্য গুরুত্বপূর্ণ তথ্য | CANADA",
+  "channel": "Sowkat Hayat",
+  "channel_id": "UCCGIh_-Q0dwfeSyHi-li6nA",
+  "upload_date": "20260801",
+  "duration": 325.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 590,
+    "duration_s": 325.0,
+    "words_per_minute": 108.923,
+    "coverage": 0.995,
+    "gaps": [],
+    "segments": 11,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

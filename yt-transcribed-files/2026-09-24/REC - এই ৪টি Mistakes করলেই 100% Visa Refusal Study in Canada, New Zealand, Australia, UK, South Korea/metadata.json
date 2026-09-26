@@ -1,0 +1,27 @@
+{
+  "id": "RtDV1IEfMVU",
+  "url": "https://www.youtube.com/watch?v=RtDV1IEfMVU",
+  "platform": "youtube",
+  "title": "এই ৪টি Mistakes করলেই 100% Visa Refusal | Study in Canada, New Zealand, Australia, UK, South Korea",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260626",
+  "duration": 941.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1736,
+    "duration_s": 941.0,
+    "words_per_minute": 110.691,
+    "coverage": 1.0,
+    "gaps": [],
+    "segments": 32,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

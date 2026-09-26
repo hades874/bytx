@@ -1,0 +1,27 @@
+{
+  "id": "Sk9yj7TaJrI",
+  "url": "https://www.youtube.com/watch?v=Sk9yj7TaJrI",
+  "platform": "youtube",
+  "title": "Avoid New Zealand Student Visa Rejection ❌: Strong File Checklist for Bangladeshi Students! 📝",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260629",
+  "duration": 509.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 891,
+    "duration_s": 509.0,
+    "words_per_minute": 105.029,
+    "coverage": 0.989,
+    "gaps": [],
+    "segments": 17,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

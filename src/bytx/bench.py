@@ -10,7 +10,7 @@ from pathlib import Path
 
 from rich.markup import escape
 
-from . import fetch
+from . import fetch, glossary
 from .config import Config
 from .transcribe import Transcriber
 
@@ -95,7 +95,9 @@ def _bench_one_model(
         )
         return
 
-    transcriber = Transcriber(model_dir, model_cfg, cfg.asr)
+    # Same glossary priming as a real run, so `asr.glossary_prompt_languages` can be
+    # tried (e.g. adding "bn") and scored against a reference before adopting it.
+    transcriber = Transcriber(model_dir, model_cfg, cfg.asr, glossary.load(cfg.asr.glossary))
     t0 = time.time()
     try:
         # A pinned model uses its own language; a multilingual one defaults to English.

@@ -1,0 +1,27 @@
+{
+  "id": "G-h93TaxjGA",
+  "url": "https://www.youtube.com/watch?v=G-h93TaxjGA",
+  "platform": "youtube",
+  "title": "Study in New Zealand from Bangladesh | Admission to Visa Approval - Real Student Journey🇧🇩✈️",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260714",
+  "duration": 645.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1137,
+    "duration_s": 645.0,
+    "words_per_minute": 105.767,
+    "coverage": 0.992,
+    "gaps": [],
+    "segments": 22,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

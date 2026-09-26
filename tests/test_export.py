@@ -6,6 +6,7 @@ from datetime import date
 import pytest
 
 from bytx import export, store
+from bytx.quality import Quality
 
 
 def make_video(**overrides) -> store.Video:
@@ -176,18 +177,80 @@ def test_sanitize_folder_name_falls_back_to_video_id_when_empty():
 # --- write_transcript_copy ---------------------------------------------------
 
 DAY = date(2026, 9, 25)
+NAME = "Test Channel - বাংলা লেকচার"
 
 
-def test_write_transcript_copy_writes_plain_text_only(tmp_path):
+def make_quality(**overrides) -> Quality:
+    fields = dict(words=20, duration_s=125.0, words_per_minute=9.6, coverage=0.9, segments=2)
+    fields.update(overrides)
+    return Quality(**fields)
+
+
+def test_write_transcript_copy_is_named_by_channel_and_title_and_has_every_file(tmp_path):
     video = make_video()
     segs = make_segments()
-    out_dir = export.write_transcript_copy(tmp_path, video, segs, today=DAY)
+    out_dir = export.write_transcript_copy(tmp_path, video, segs, quality=make_quality(), today=DAY)
 
-    assert out_dir == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
+    assert out_dir == tmp_path / "2026-09-25" / NAME
     assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == export.to_txt(segs)
+    assert (out_dir / "transcript.vtt").read_text(encoding="utf-8") == export.to_vtt(segs)
+    assert json.loads((out_dir / "transcript.json").read_text(encoding="utf-8"))["quality"]["words"] == 20
     assert (out_dir / ".video_id").read_text(encoding="utf-8") == "abc123"
-    assert not (out_dir / "transcript.srt").exists()
-    assert not (out_dir / "transcript.json").exists()
+    assert not (out_dir / "transcript.clean.txt").exists()  # nothing was corrected
+
+
+def test_metadata_json_records_provenance_and_quality(tmp_path):
+    video = make_video(language="bn", transcribed_at="2026-09-25T10:00:00.000Z")
+    out_dir = export.write_transcript_copy(
+        tmp_path, video, make_segments(), quality=make_quality(flags=["odd"]), today=DAY
+    )
+    meta = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+
+    assert meta["id"] == "abc123"
+    assert meta["title"] == "বাংলা লেকচার"
+    assert meta["channel"] == "Test Channel"
+    assert meta["upload_date"] == "20260101"
+    assert meta["duration"] == 125.0
+    assert meta["language"] == "bn"
+    assert meta["source"] == "asr"
+    assert meta["asr_model"] == "tugstugi-medium-bn"
+    assert meta["transcribed_at"] == "2026-09-25T10:00:00.000Z"
+    assert meta["quality"]["flags"] == ["odd"]
+
+
+def test_metadata_json_title_falls_back_to_the_caption(tmp_path):
+    video = make_video(title=None, description="\nপ্রথম লাইন\nদ্বিতীয়")
+    out_dir = export.write_transcript_copy(tmp_path, video, make_segments(), today=DAY)
+    meta = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["title"] == "প্রথম লাইন"
+
+
+def test_transcript_json_carries_per_clip_confidence(tmp_path):
+    segs = [store.Segment(idx=0, start_s=0, end_s=1, text="a", avg_logprob=-0.4321987, no_speech_prob=0.5)]
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), segs, today=DAY)
+    seg = json.loads((out_dir / "transcript.json").read_text(encoding="utf-8"))["segments"][0]
+    assert seg == {"start": 0, "end": 1, "text": "a", "avg_logprob": -0.4322, "no_speech_prob": 0.5}
+
+
+def test_segments_without_confidence_omit_the_fields():
+    payload = json.loads(export.to_json(make_video(), make_segments()))
+    assert set(payload["segments"][0]) == {"start", "end", "text"}
+    assert "quality" not in payload
+
+
+def test_clean_transcript_is_written_only_when_the_glossary_changed_something(tmp_path):
+    raw = [store.Segment(idx=0, start_s=0, end_s=1, text="Trusted Ireland")]
+    clean = [store.Segment(idx=0, start_s=0, end_s=1, text="TrustEd Ireland")]
+
+    out_dir = export.write_transcript_copy(
+        tmp_path, make_video(), raw, cleaned=clean, glossary_replacements=1, today=DAY
+    )
+    assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == "Trusted Ireland\n"  # raw untouched
+    assert (out_dir / "transcript.clean.txt").read_text(encoding="utf-8") == "TrustEd Ireland\n"
+
+    # A later run with nothing to correct must not leave the old clean file behind.
+    export.write_transcript_copy(tmp_path, make_video(), raw, cleaned=raw, glossary_replacements=0, today=DAY)
+    assert not (out_dir / "transcript.clean.txt").exists()
 
 
 def test_write_transcript_copy_defaults_to_today(tmp_path):
@@ -203,7 +266,7 @@ def test_write_transcript_copy_rerun_same_video_overwrites_in_place(tmp_path):
         tmp_path, video, [store.Segment(idx=0, start_s=0, end_s=1, text="নতুন")], today=DAY
     )
 
-    assert out_dir == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
+    assert out_dir == tmp_path / "2026-09-25" / NAME
     assert set(p.name for p in tmp_path.iterdir()) == {"2026-09-25"}
     assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == "নতুন\n"
 
@@ -236,8 +299,8 @@ def test_write_transcript_copy_collision_appends_video_id(tmp_path):
     dir_b = export.write_transcript_copy(tmp_path, video_b, make_segments(), today=DAY)
 
     assert dir_a != dir_b
-    assert dir_a == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
-    assert dir_b == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার (xyz789)"
+    assert dir_a == tmp_path / "2026-09-25" / NAME
+    assert dir_b == tmp_path / "2026-09-25" / f"{NAME} (xyz789)"
 
 
 def test_write_transcript_copy_title_change_reuses_original_folder(tmp_path):
@@ -251,7 +314,7 @@ def test_write_transcript_copy_title_change_reuses_original_folder(tmp_path):
 
 
 def test_write_transcript_copy_reuses_legacy_folder_directly_under_root(tmp_path):
-    legacy = tmp_path / "Test Channel - বাংলা লেকচার"
+    legacy = tmp_path / NAME
     legacy.mkdir()
     (legacy / ".video_id").write_text("abc123", encoding="utf-8")
 
@@ -266,7 +329,73 @@ def test_write_transcript_copy_ignores_folders_without_marker(tmp_path):
     (tmp_path / "2026-09-25" / "unrelated").mkdir(parents=True)
     out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
 
-    assert out_dir == tmp_path / "2026-09-25" / "Test Channel - বাংলা লেকচার"
+    assert out_dir == tmp_path / "2026-09-25" / NAME
+
+
+def test_a_folder_named_by_video_id_is_renamed_to_the_title_form(tmp_path):
+    """The short-lived id-named layout: no marker, named after the id."""
+    by_id = tmp_path / "2026-09-24" / "abc123"
+    by_id.mkdir(parents=True)
+    (by_id / "transcript.txt").write_text("old\n", encoding="utf-8")
+
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
+
+    assert out_dir == tmp_path / "2026-09-24" / NAME  # keeps its date folder
+    assert not by_id.exists()
+    assert (out_dir / ".video_id").read_text(encoding="utf-8") == "abc123"
+    assert (out_dir / "transcript.txt").read_text(encoding="utf-8") == export.to_txt(make_segments())
+
+
+def test_renaming_an_id_folder_never_clobbers_another_videos_folder(tmp_path):
+    export.write_transcript_copy(tmp_path, make_video(id="other1"), make_segments(), today=DAY)
+    by_id = tmp_path / "2026-09-25" / "abc123"
+    by_id.mkdir()
+
+    out_dir = export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
+
+    assert out_dir == tmp_path / "2026-09-25" / f"{NAME} (abc123)"
+    assert (tmp_path / "2026-09-25" / NAME / ".video_id").read_text(encoding="utf-8") == "other1"
+
+
+# --- write_index --------------------------------------------------------------
+
+def test_index_lists_every_transcript_with_its_flags_newest_first(tmp_path):
+    export.write_transcript_copy(
+        tmp_path, make_video(id="old1", title="Old | video"), make_segments(),
+        quality=make_quality(), today=date(2026, 9, 24),
+    )
+    export.write_transcript_copy(
+        tmp_path, make_video(id="new1", title="New video", language="en"), make_segments(),
+        quality=make_quality(words_per_minute=42.0, flags=["only 42 words/min"]), today=date(2026, 9, 26),
+    )
+
+    text = export.write_index(tmp_path).read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if line.startswith("| 2026")]
+
+    assert len(rows) == 2
+    assert "new1" in rows[0] and "New video" in rows[0] and "only 42 words/min" in rows[0]
+    assert "[new1](2026-09-26/Test%20Channel%20-%20New%20video/transcript.txt)" in rows[0]
+    assert "old1" in rows[1]
+    assert "Old \\| video" in rows[1]  # a pipe in a title must not break the table
+    assert "2:05" in rows[1]  # 125 s
+
+
+def test_index_skips_unreadable_metadata_and_non_date_folders(tmp_path):
+    export.write_transcript_copy(tmp_path, make_video(), make_segments(), today=DAY)
+    (tmp_path / "2026-09-25" / "broken").mkdir()
+    (tmp_path / "2026-09-25" / "broken" / "metadata.json").write_text("{nope", encoding="utf-8")
+    (tmp_path / "misc" / "x").mkdir(parents=True)
+    (tmp_path / "misc" / "x" / "metadata.json").write_text("{}", encoding="utf-8")
+
+    text = export.write_index(tmp_path).read_text(encoding="utf-8")
+
+    assert len([line for line in text.splitlines() if line.startswith("| 2026")]) == 1
+
+
+def test_index_of_an_empty_folder_is_just_the_header(tmp_path):
+    text = export.write_index(tmp_path).read_text(encoding="utf-8")
+    assert text.startswith("# Transcripts")
+    assert not [line for line in text.splitlines() if line.startswith("| 2026")]
 
 
 def test_info_json_records_the_platform(tmp_path):

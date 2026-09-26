@@ -278,13 +278,31 @@ def test_transcribe_one_warns_when_little_speech_detected(conn, tmp_path, monkey
 def test_transcribe_one_no_warning_for_healthy_asr(conn, tmp_path, monkeypatch, caplog):
     cfg = make_config(tmp_path)
     vid = "ddddddddddd"
-    patch_fetch(monkeypatch, tmp_path)
+    patch_fetch(monkeypatch, tmp_path)  # fake video duration is 60s
+    # A minute of ordinary speech: ~130 words spanning the whole video.
+    _TRANSCRIBE_RESULTS[vid] = [
+        store.Segment(idx=i, start_s=i * 30.0, end_s=(i + 1) * 30.0, text=" ".join(["শব্দ"] * 65))
+        for i in range(2)
+    ]
     store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
 
     with caplog.at_level("WARNING", logger="bytx.pipeline"):
         pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
 
     assert caplog.text == ""
+
+
+def test_transcribe_one_logs_quality_flags_for_thin_output(conn, tmp_path, monkeypatch, caplog):
+    cfg = make_config(tmp_path)
+    vid = "eeeeeeeeeee"
+    patch_fetch(monkeypatch, tmp_path)  # 60 s video; the default fake text is 2 words
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+
+    with caplog.at_level("WARNING", logger="bytx.pipeline"):
+        pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
+
+    assert "words/min" in caplog.text
+    assert store.get_video(conn, vid).status == "transcribed"
 
 
 def test_transcribe_one_prefers_human_subs(conn, tmp_path, monkeypatch):
@@ -326,6 +344,11 @@ def test_transcribe_one_writes_human_facing_copy_and_ledger_entry(conn, tmp_path
     transcript = out_dir / "transcript.txt"
     assert transcript.exists()
     assert transcript.read_text(encoding="utf-8") == "মানুষের সাবটাইটেল\n"
+    meta = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["title"] == "Title " + vid and meta["source"] == "human_subs"
+    assert meta["transcribed_at"]
+    assert (out_dir / "transcript.vtt").exists() and (out_dir / "transcript.json").exists()
+    assert vid in (cfg.paths.transcribed_files_dir / "INDEX.md").read_text(encoding="utf-8")
 
     ledger_content = ledger.ledger_path(cfg).read_text(encoding="utf-8")
     assert f"- id: {vid}" in ledger_content
@@ -1059,3 +1082,82 @@ def test_transcribe_one_stores_under_the_queued_row_even_if_the_extractor_id_dif
     pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, "aaaaaaaaaaa"))
 
     assert [(v.id, v.status) for v in store.list_videos(conn)] == [("aaaaaaaaaaa", "transcribed")]
+
+
+# --- reexport --------------------------------------------------------------------------
+
+def _transcribed(conn, vid, text="hello", **video_fields):
+    store.upsert_video(conn, store.Video(
+        id=vid, url=video_url(vid), title=f"Title {vid}", channel="Chan", duration=60.0, language="bn",
+        **video_fields,
+    ))
+    store.replace_segments(conn, vid, [store.Segment(idx=0, start_s=0.0, end_s=60.0, text=text)])
+    store.set_video_source(conn, vid, "asr", "m")
+    store.set_video_status(conn, vid, "transcribed")
+
+
+def test_reexport_rebuilds_every_transcribed_video_without_asr(conn, tmp_path):
+    cfg = make_config(tmp_path)
+    _transcribed(conn, "aaaaaaaaaaa")
+    _transcribed(conn, "bbbbbbbbbbb")
+    store.upsert_video(conn, store.Video(id="qqqqqqqqqqq", url=video_url("qqqqqqqqqqq")))  # still queued
+
+    done = pipeline.reexport(conn, cfg)
+
+    assert sorted(done) == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    shared = cfg.paths.transcribed_files_dir
+    folder = shared / date.today().isoformat() / "Chan - Title aaaaaaaaaaa"
+    assert (folder / "metadata.json").exists() and (folder / "transcript.vtt").exists()
+    assert (cfg.paths.videos_dir / "aaaaaaaaaaa" / "transcript.json").exists()
+    assert not (cfg.paths.videos_dir / "qqqqqqqqqqq").exists()
+    index = (shared / "INDEX.md").read_text(encoding="utf-8")
+    assert "aaaaaaaaaaa" in index and "bbbbbbbbbbb" in index and "qqqqqqqqqqq" not in index
+
+
+def test_reexport_limits_to_the_given_ids_and_skips_unknown_ones(conn, tmp_path):
+    cfg = make_config(tmp_path)
+    _transcribed(conn, "aaaaaaaaaaa")
+    _transcribed(conn, "bbbbbbbbbbb")
+
+    assert pipeline.reexport(conn, cfg, ["bbbbbbbbbbb", "nope"]) == ["bbbbbbbbbbb"]
+    assert not (cfg.paths.videos_dir / "aaaaaaaaaaa").exists()
+
+
+def test_reexport_converts_an_id_named_folder_and_applies_the_glossary(conn, tmp_path):
+    cfg = make_config(tmp_path)
+    glossary_file = tmp_path / "glossary.txt"
+    glossary_file.write_text("TrustEd Ireland <= Trusted Ireland\n", encoding="utf-8")
+    cfg = dataclasses.replace(cfg, asr=dataclasses.replace(cfg.asr, glossary=glossary_file))
+    _transcribed(conn, "aaaaaaaaaaa", text="apply to Trusted Ireland")
+    legacy = cfg.paths.transcribed_files_dir / "2026-09-24" / "aaaaaaaaaaa"  # the id-named layout
+    legacy.mkdir(parents=True)
+
+    pipeline.reexport(conn, cfg)
+
+    folder = cfg.paths.transcribed_files_dir / "2026-09-24" / "Chan - Title aaaaaaaaaaa"
+    assert not legacy.exists()
+    assert (folder / "transcript.txt").read_text(encoding="utf-8") == "apply to Trusted Ireland\n"
+    assert (folder / "transcript.clean.txt").read_text(encoding="utf-8") == "apply to TrustEd Ireland\n"
+    meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["glossary_replacements"] == 1
+    assert store.get_segments(conn, "aaaaaaaaaaa")[0].text == "apply to Trusted Ireland"  # DB stays raw
+
+
+def test_transcribe_one_records_quality_and_confidence_in_the_shared_copy(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    vid = "ffffffffffff"[:11]
+    patch_fetch(monkeypatch, tmp_path)
+    _TRANSCRIBE_RESULTS[vid] = [
+        store.Segment(idx=0, start_s=0.0, end_s=60.0, text=" ".join(["শব্দ"] * 120), avg_logprob=-1.5)
+    ]
+    store.upsert_video(conn, store.Video(id=vid, url=video_url(vid), status="queued"))
+
+    pipeline.transcribe_one(conn, cfg, FakePool(cfg), store.get_video(conn, vid))
+
+    folder = cfg.paths.transcribed_files_dir / date.today().isoformat() / f"Chan - Title {vid}"
+    meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["quality"]["low_confidence"] == [0]
+    assert meta["quality"]["words"] == 120
+    assert "low-confidence" in " ".join(meta["quality"]["flags"])
+    seg = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["segments"][0]
+    assert seg["avg_logprob"] == -1.5

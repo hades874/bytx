@@ -1,0 +1,27 @@
+{
+  "id": "65Okgtxm_zM",
+  "url": "https://www.youtube.com/watch?v=65Okgtxm_zM",
+  "platform": "youtube",
+  "title": "If I Applied to Study in the UK from BANGLADESH - Here’s EXACTLY What I’d Do!! 👉",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260904",
+  "duration": 973.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1760,
+    "duration_s": 973.0,
+    "words_per_minute": 108.53,
+    "coverage": 0.998,
+    "gaps": [],
+    "segments": 33,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "5zOKQ5jqv6I",
+  "url": "https://www.youtube.com/watch?v=5zOKQ5jqv6I",
+  "platform": "youtube",
+  "title": "Study in New Zealand 2026 | Complete Cost Guide for Bangladeshi Students | Newzealand Visa",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260731",
+  "duration": 695.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1295,
+    "duration_s": 695.0,
+    "words_per_minute": 111.799,
+    "coverage": 0.988,
+    "gaps": [],
+    "segments": 23,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

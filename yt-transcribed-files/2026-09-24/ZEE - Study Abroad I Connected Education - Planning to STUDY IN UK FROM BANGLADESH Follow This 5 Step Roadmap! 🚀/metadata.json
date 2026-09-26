@@ -1,0 +1,27 @@
+{
+  "id": "Q_Hs-cmIxF8",
+  "url": "https://www.youtube.com/watch?v=Q_Hs-cmIxF8",
+  "platform": "youtube",
+  "title": "Planning to STUDY IN UK FROM BANGLADESH? Follow This 5 Step Roadmap! 🚀",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260830",
+  "duration": 1057.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1692,
+    "duration_s": 1057.0,
+    "words_per_minute": 96.045,
+    "coverage": 0.997,
+    "gaps": [],
+    "segments": 35,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

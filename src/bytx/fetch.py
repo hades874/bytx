@@ -5,12 +5,15 @@ supported language when available.
 
 Only uploader subtitles (yt-dlp's `subtitles`, never `automatic_captions`)
 are treated as "human subs" — YouTube's auto-generated captions are lower
-quality than our ASR and are intentionally ignored. Facebook videos have no
-uploader subtitles in yt-dlp, so they always go through ASR.
+quality than our ASR and are intentionally ignored as a source. They are only
+fetched on request, as an independent second opinion for `bytx compare`.
+Facebook videos have no uploader subtitles in yt-dlp, so they always go
+through ASR.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +43,12 @@ class VideoInfo:
     # Uploader-made subtitle URLs by supported language code ("bn", "en").
     human_subtitles: dict[str, str] = field(default_factory=dict)
     platform: str = platforms.YOUTUBE
+    # YouTube's machine-made caption track in the spoken language, by language code
+    # (json3 URL). Never used as a transcript; see `bytx compare`.
+    auto_subtitles: dict[str, str] = field(default_factory=dict)
+    # Language YouTube itself hears in the video (the "<lang>-orig" caption track), even
+    # when it is one bytx does not support, e.g. "hi". None when it has no such track.
+    auto_spoken_language: str | None = None
 
 
 def normalize_channel_url(url: str) -> str:
@@ -134,6 +143,34 @@ def _collect_human_subtitles(info: dict) -> dict[str, str]:
     return found
 
 
+def _collect_auto_captions(info: dict) -> dict[str, str]:
+    """URL (json3 format) of YouTube's auto-generated caption track for the
+    language actually spoken in the video, per supported language.
+
+    yt-dlp lists auto-captions for dozens of languages, most of them machine
+    *translations*. The spoken-language track is the one keyed "<lang>-orig";
+    older listings without any "-orig" key have it under the plain code.
+    """
+    tracks = info.get("automatic_captions") or {}
+    keys = [k for k in tracks if k.lower().endswith("-orig")] or list(tracks)
+    found: dict[str, str] = {}
+    for key in keys:
+        code = langs.normalize(key)
+        if code is None or code in found:
+            continue
+        json3 = next((f for f in tracks[key] if f.get("ext") == "json3" and f.get("url")), None)
+        if json3:
+            found[code] = json3["url"]
+    return found
+
+
+def _auto_spoken_language(info: dict) -> str | None:
+    for key in info.get("automatic_captions") or {}:
+        if key.lower().endswith("-orig"):
+            return key[: -len("-orig")]
+    return None
+
+
 def get_video_info(url: str, cfg: Config) -> VideoInfo:
     opts = _base_ydl_opts(cfg)
     opts["extract_flat"] = False
@@ -160,6 +197,8 @@ def get_video_info(url: str, cfg: Config) -> VideoInfo:
         description=description,
         human_subtitles=_collect_human_subtitles(info),
         platform=platform,
+        auto_subtitles=_collect_auto_captions(info),
+        auto_spoken_language=_auto_spoken_language(info),
     )
 
 
@@ -237,3 +276,27 @@ def fetch_human_subtitle_segments(sub_url: str) -> list[store.Segment]:
     resp = httpx.get(sub_url, timeout=30.0, follow_redirects=True)
     resp.raise_for_status()
     return parse_vtt(resp.text)
+
+
+def parse_json3_captions(text: str) -> list[store.Segment]:
+    """Cues from a YouTube json3 caption file (each event has a start, a
+    duration and text pieces). Events with no text, such as the bare newlines
+    auto-captions use to scroll, are dropped."""
+    segments: list[store.Segment] = []
+    for event in json.loads(text).get("events", []):
+        pieces = event.get("segs")
+        if not pieces or "tStartMs" not in event:
+            continue
+        cue = " ".join("".join(piece.get("utf8", "") for piece in pieces).split())
+        if not cue:
+            continue
+        start = event["tStartMs"] / 1000
+        end = start + event.get("dDurationMs", 0) / 1000
+        segments.append(store.Segment(idx=len(segments), start_s=start, end_s=end, text=cue))
+    return segments
+
+
+def fetch_auto_caption_segments(caption_url: str) -> list[store.Segment]:
+    resp = httpx.get(caption_url, timeout=30.0, follow_redirects=True)
+    resp.raise_for_status()
+    return parse_json3_captions(resp.text)

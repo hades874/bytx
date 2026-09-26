@@ -1,0 +1,27 @@
+{
+  "id": "tho7bsqm4Ag",
+  "url": "https://www.youtube.com/watch?v=tho7bsqm4Ag",
+  "platform": "youtube",
+  "title": "Study in Australia vs Canada | Cost, PR & Job Comparison for Bangladeshi Students | Study In Canada",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260308",
+  "duration": 674.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1184,
+    "duration_s": 674.0,
+    "words_per_minute": 105.401,
+    "coverage": 0.999,
+    "gaps": [],
+    "segments": 23,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

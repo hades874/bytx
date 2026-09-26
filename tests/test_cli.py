@@ -309,3 +309,191 @@ def test_doctor_says_deno_is_only_needed_for_youtube(config_path, monkeypatch):
     assert "deno not found on PATH (needed for YouTube; Facebook works without it)" in result.output
     assert "ffmpeg not found on PATH" in result.output
     assert "ffmpeg not found on PATH (needed" not in result.output  # the note is deno's alone
+
+
+# --- quality / reexport / compare ----------------------------------------------------------
+
+def _transcribed(tmp_path, video_id, text, duration=60.0, language="en", platform="youtube", **seg_fields):
+    conn = db(tmp_path)
+    store.upsert_video(conn, store.Video(
+        id=video_id, url=f"https://www.youtube.com/watch?v={video_id}", title=f"Title {video_id}",
+        channel="Chan", duration=duration, language=language, platform=platform,
+    ))
+    store.replace_segments(
+        conn, video_id, [store.Segment(idx=0, start_s=0.0, end_s=duration, text=text, **seg_fields)]
+    )
+    store.set_video_source(conn, video_id, "asr", "m")
+    store.set_video_status(conn, video_id, "transcribed")
+    conn.close()
+
+
+HEALTHY = " ".join(["word"] * 130)  # 130 words/min for a 60 s video
+
+
+def test_quality_lists_flagged_transcripts_first(config_path, tmp_path):
+    _transcribed(tmp_path, "goodgoodgoo", HEALTHY)
+    _transcribed(tmp_path, "thinthinthi", "just three words")
+
+    result = runner.invoke(cli.app, ["quality", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.index("thinthinthi") < result.output.index("goodgoodgoo")
+    assert "1 of 2 transcript(s) flagged" in result.output
+
+
+def test_quality_flagged_hides_healthy_transcripts(config_path, tmp_path):
+    _transcribed(tmp_path, "goodgoodgoo", HEALTHY)
+    _transcribed(tmp_path, "thinthinthi", "just three words")
+
+    result = runner.invoke(cli.app, ["quality", "--flagged", "--config", config_path])
+
+    assert "thinthinthi" in result.output and "goodgoodgoo" not in result.output
+
+
+def test_quality_for_one_video_explains_the_flags(config_path, tmp_path):
+    _transcribed(tmp_path, "thinthinthi", "just three words")
+
+    result = runner.invoke(cli.app, ["quality", "thinthinthi", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "only 3 words/min" in result.output
+    assert "speech may be missing" in result.output
+    assert "No per-clip confidence" in result.output
+
+
+def test_quality_for_an_unknown_video_fails(config_path):
+    result = runner.invoke(cli.app, ["quality", "nope", "--config", config_path])
+    assert result.exit_code == 1
+    assert "No such video" in result.output
+
+
+def test_reexport_needs_ids_or_all(config_path):
+    result = runner.invoke(cli.app, ["reexport", "--config", config_path])
+    assert result.exit_code == 1
+    assert "--all" in result.output
+
+
+def test_reexport_all_rewrites_the_shared_folder_and_index(config_path, tmp_path):
+    _transcribed(tmp_path, "goodgoodgoo", HEALTHY)
+
+    result = runner.invoke(cli.app, ["reexport", "--all", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "Rewrote 1 transcript(s)" in result.output
+    shared = tmp_path / "yt-transcribed-files"
+    assert (shared / "INDEX.md").exists()
+    assert list(shared.glob("*/Chan - Title goodgoodgoo/metadata.json"))
+
+
+def test_reexport_reports_ids_it_skipped(config_path, tmp_path):
+    _transcribed(tmp_path, "goodgoodgoo", HEALTHY)
+
+    result = runner.invoke(cli.app, ["reexport", "goodgoodgoo", "nope", "--config", config_path])
+
+    assert "Rewrote 1 transcript(s)" in result.output
+    assert "nope" in result.output
+
+
+VTT = """WEBVTT
+
+00:00:01.000 --> 00:00:05.000
+this is the reference text
+
+00:00:20.000 --> 00:00:28.000
+speech the transcript never captured
+"""
+
+
+def test_compare_against_a_caption_file_writes_a_report(config_path, tmp_path):
+    _transcribed(tmp_path, "goodgoodgoo", "something completely unrelated to it", duration=10.0)
+    vtt = tmp_path / "ref.vtt"
+    vtt.write_text(VTT, encoding="utf-8")
+    report = tmp_path / "report.md"
+
+    result = runner.invoke(cli.app, [
+        "compare", "goodgoodgoo", "--against", str(vtt), "--output", str(report), "--config", config_path,
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "1 below 50%" in result.output
+    text = report.read_text(encoding="utf-8")
+    assert "# Comparison: Title goodgoodgoo" in text
+    assert "this is the reference text" in text
+    assert "speech the transcript never captured" in text  # listed as missing
+
+
+def test_compare_defaults_to_compare_md_in_the_transcript_folder(config_path, tmp_path):
+    _transcribed(tmp_path, "goodgoodgoo", "something completely unrelated to it", duration=10.0)
+    runner.invoke(cli.app, ["reexport", "--all", "--config", config_path])
+    vtt = tmp_path / "ref.vtt"
+    vtt.write_text(VTT, encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--against", str(vtt), "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    (folder,) = (tmp_path / "yt-transcribed-files").glob("*/Chan - Title goodgoodgoo")
+    assert (folder / "compare.md").exists()
+
+
+def test_compare_fetches_youtube_auto_captions(config_path, tmp_path, monkeypatch):
+    _transcribed(tmp_path, "goodgoodgoo", "something completely unrelated to it", duration=10.0)
+    info = fetch.VideoInfo(
+        id="goodgoodgoo", url="u", title="t", channel="c", channel_id="c", upload_date=None,
+        duration=10.0, description=None, auto_subtitles={"en": "http://captions/en.json3"},
+    )
+    monkeypatch.setattr(fetch, "get_video_info", lambda url, cfg: info)
+    monkeypatch.setattr(
+        fetch, "fetch_auto_caption_segments",
+        lambda url: [store.Segment(idx=0, start_s=1, end_s=5, text="the auto caption text")],
+    )
+    out = tmp_path / "report.md"
+
+    result = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--output", str(out), "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "YouTube auto-captions: the auto caption text" in out.read_text(encoding="utf-8")
+
+
+def test_compare_explains_when_youtube_has_no_captions_in_the_language(config_path, tmp_path, monkeypatch):
+    _transcribed(tmp_path, "goodgoodgoo", "words", duration=10.0)
+    info = fetch.VideoInfo(
+        id="goodgoodgoo", url="u", title="t", channel="c", channel_id="c", upload_date=None,
+        duration=10.0, description=None,
+    )
+    monkeypatch.setattr(fetch, "get_video_info", lambda url, cfg: info)
+
+    result = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--config", config_path])
+
+    assert result.exit_code == 1
+    assert "no English auto-captions" in result.output.replace("\n", " ")
+
+
+def test_compare_says_when_youtube_hears_another_language(config_path, tmp_path, monkeypatch):
+    _transcribed(tmp_path, "goodgoodgoo", "words", duration=10.0)
+    info = fetch.VideoInfo(
+        id="goodgoodgoo", url="u", title="t", channel="c", channel_id="c", upload_date=None,
+        duration=10.0, description=None, auto_spoken_language="hi",
+    )
+    monkeypatch.setattr(fetch, "get_video_info", lambda url, cfg: info)
+
+    result = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--config", config_path])
+
+    assert result.exit_code == 1
+    assert "hears this video as 'hi', not English" in result.output.replace("\n", " ")
+
+
+def test_compare_rejects_facebook_videos_without_a_caption_file(config_path, tmp_path):
+    _transcribed(tmp_path, "fb_123456789012345", "words", duration=10.0, platform="facebook")
+
+    result = runner.invoke(cli.app, ["compare", "fb_123456789012345", "--config", config_path])
+
+    assert result.exit_code == 1
+    assert "--against" in result.output
+
+
+def test_compare_unknown_video_and_missing_file_fail(config_path, tmp_path):
+    assert runner.invoke(cli.app, ["compare", "nope", "--config", config_path]).exit_code == 1
+    _transcribed(tmp_path, "goodgoodgoo", "words", duration=10.0)
+    missing = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--against", "nofile.vtt", "--config", config_path])
+    assert missing.exit_code == 1
+    assert "No such file" in missing.output

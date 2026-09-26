@@ -1,0 +1,27 @@
+{
+  "id": "yxEdeXJ4cyE",
+  "url": "https://www.youtube.com/watch?v=yxEdeXJ4cyE",
+  "platform": "youtube",
+  "title": "Study in Canada 2027 🇨🇦  Complete Application Roadmap For BD Students 🇧🇩",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260730",
+  "duration": 718.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1307,
+    "duration_s": 718.0,
+    "words_per_minute": 109.22,
+    "coverage": 0.993,
+    "gaps": [],
+    "segments": 24,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

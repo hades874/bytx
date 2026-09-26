@@ -1,0 +1,27 @@
+{
+  "id": "YhOyMinHL4c",
+  "url": "https://www.youtube.com/watch?v=YhOyMinHL4c",
+  "platform": "youtube",
+  "title": "How to Study in UK from Bangladesh: A to Z Process Explained! 🇧🇩✈️🇬🇧",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260827",
+  "duration": 979.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1800,
+    "duration_s": 979.0,
+    "words_per_minute": 110.317,
+    "coverage": 0.997,
+    "gaps": [],
+    "segments": 33,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

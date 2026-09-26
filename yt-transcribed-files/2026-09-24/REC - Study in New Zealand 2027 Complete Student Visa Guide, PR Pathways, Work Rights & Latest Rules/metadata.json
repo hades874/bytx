@@ -1,0 +1,27 @@
+{
+  "id": "pvbjIhQVXqs",
+  "url": "https://www.youtube.com/watch?v=pvbjIhQVXqs",
+  "platform": "youtube",
+  "title": "Study in New Zealand 2027 | Complete Student Visa Guide, PR Pathways, Work Rights & Latest Rules",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260710",
+  "duration": 593.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1063,
+    "duration_s": 593.0,
+    "words_per_minute": 107.555,
+    "coverage": 0.986,
+    "gaps": [],
+    "segments": 20,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

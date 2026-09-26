@@ -1,0 +1,27 @@
+{
+  "id": "1cImYvRS1bM",
+  "url": "https://www.youtube.com/watch?v=1cImYvRS1bM",
+  "platform": "youtube",
+  "title": "Canada vs New Zealand vs UK vs Australia | Pick the right country in 2027",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260724",
+  "duration": 864.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1635,
+    "duration_s": 864.0,
+    "words_per_minute": 113.542,
+    "coverage": 0.989,
+    "gaps": [],
+    "segments": 29,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

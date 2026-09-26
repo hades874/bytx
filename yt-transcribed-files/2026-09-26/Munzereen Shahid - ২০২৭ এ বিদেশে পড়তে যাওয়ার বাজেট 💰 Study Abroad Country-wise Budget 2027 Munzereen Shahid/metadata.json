@@ -1,0 +1,27 @@
+{
+  "id": "sTC-b7G1dnQ",
+  "url": "https://www.youtube.com/watch?v=sTC-b7G1dnQ",
+  "platform": "youtube",
+  "title": "২০২৭ এ বিদেশে পড়তে যাওয়ার বাজেট 💰 | Study Abroad Country-wise Budget 2027 | Munzereen Shahid",
+  "channel": "Munzereen Shahid",
+  "channel_id": "UCiBJGpHQKvwZ5xUg0LU_EfQ",
+  "upload_date": "20260922",
+  "duration": 1406.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": "2026-09-26T06:33:58.442Z",
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 3427,
+    "duration_s": 1406.0,
+    "words_per_minute": 146.245,
+    "coverage": 0.994,
+    "gaps": [],
+    "segments": 159,
+    "low_confidence": [],
+    "confidence_known": true,
+    "mean_avg_logprob": -0.04,
+    "flags": []
+  }
+}

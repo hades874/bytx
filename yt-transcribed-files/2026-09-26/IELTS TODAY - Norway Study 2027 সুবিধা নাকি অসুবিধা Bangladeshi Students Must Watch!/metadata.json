@@ -1,0 +1,27 @@
+{
+  "id": "2XsHQM3k6u0",
+  "url": "https://www.youtube.com/watch?v=2XsHQM3k6u0",
+  "platform": "youtube",
+  "title": "Norway Study 2027: সুবিধা নাকি অসুবিধা? | Bangladeshi Students Must Watch!",
+  "channel": "IELTS TODAY",
+  "channel_id": "UC89sCIPeg3W4VdFdvTvrvKw",
+  "upload_date": "20260711",
+  "duration": 715.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": "2026-09-25T21:39:34.830Z",
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1932,
+    "duration_s": 715.0,
+    "words_per_minute": 162.126,
+    "coverage": 0.999,
+    "gaps": [],
+    "segments": 80,
+    "low_confidence": [],
+    "confidence_known": true,
+    "mean_avg_logprob": -0.029,
+    "flags": []
+  }
+}

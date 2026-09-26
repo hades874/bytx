@@ -1,0 +1,35 @@
+{
+  "id": "FRcs7Qp7oh4",
+  "url": "https://www.youtube.com/watch?v=FRcs7Qp7oh4",
+  "platform": "youtube",
+  "title": "Should You Study in UK?🇬🇧 Reality Check (2027)",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260911",
+  "duration": 645.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1005,
+    "duration_s": 645.0,
+    "words_per_minute": 93.488,
+    "coverage": 0.845,
+    "gaps": [
+      {
+        "start": 545.16,
+        "end": 645.0,
+        "seconds": 99.8
+      }
+    ],
+    "segments": 19,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": [
+      "1 gap(s) over 10s with no text (longest 100s at 9:05)"
+    ]
+  }
+}

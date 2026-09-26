@@ -1,0 +1,27 @@
+{
+  "id": "hlreBFj0V_4",
+  "url": "https://www.youtube.com/watch?v=hlreBFj0V_4",
+  "platform": "youtube",
+  "title": "Study in Canada 2027 | The Harsh Reality Agents Won't Tell You | Canada Visa 2027",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260918",
+  "duration": 673.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1303,
+    "duration_s": 673.0,
+    "words_per_minute": 116.166,
+    "coverage": 0.987,
+    "gaps": [],
+    "segments": 23,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

@@ -346,3 +346,77 @@ def test_flat_entries_with_an_unrecognised_extractor_and_no_url_are_dropped():
     url = "https://example.com/list"
     _FakeYoutubeDL.responses[url] = {"entries": [{"id": "9", "ie_key": "Generic"}]}
     assert fetch.expand_to_video_urls(url, make_config()) == []
+
+
+# --- auto-captions (for `bytx compare`) -----------------------------------------------
+
+def test_auto_captions_take_the_spoken_language_track_not_translations():
+    info = _info_for({}, automatic_captions={
+        "bn-orig": [{"ext": "vtt", "url": "http://x/bn.vtt"}, {"ext": "json3", "url": "http://x/bn.json3"}],
+        "en": [{"ext": "json3", "url": "http://x/en-translated.json3"}],  # machine translation of the Bangla
+        "de": [{"ext": "json3", "url": "http://x/de.json3"}],
+    })
+    assert info.auto_subtitles == {"bn": "http://x/bn.json3"}
+
+
+def test_auto_captions_without_an_orig_key_fall_back_to_the_plain_codes():
+    info = _info_for({}, automatic_captions={
+        "en": [{"ext": "json3", "url": "http://x/en.json3"}],
+        "fr": [{"ext": "json3", "url": "http://x/fr.json3"}],
+    })
+    assert info.auto_subtitles == {"en": "http://x/en.json3"}
+
+
+def test_auto_captions_need_a_json3_format():
+    info = _info_for({}, automatic_captions={"en-orig": [{"ext": "vtt", "url": "http://x/en.vtt"}]})
+    assert info.auto_subtitles == {}
+
+
+def test_no_auto_captions_at_all():
+    info = _info_for({})
+    assert info.auto_subtitles == {} and info.auto_spoken_language is None
+
+
+def test_the_language_youtube_hears_is_reported_even_when_unsupported():
+    info = _info_for({}, automatic_captions={
+        "hi-orig": [{"ext": "json3", "url": "http://x/hi.json3"}],
+        "en": [{"ext": "json3", "url": "http://x/en-translated.json3"}],
+    })
+    assert info.auto_spoken_language == "hi"
+    assert info.auto_subtitles == {}  # Hindi is not a language bytx supports; the "en" track is a translation
+
+
+def test_auto_captions_never_count_as_human_subtitles():
+    info = _info_for({}, automatic_captions={"en-orig": [{"ext": "json3", "url": "http://x/en.json3"}]})
+    assert info.human_subtitles == {}
+
+
+def test_parse_json3_captions_joins_pieces_and_skips_scroll_events():
+    import json
+
+    data = {"events": [
+        {"tStartMs": 0, "dDurationMs": 2500, "wpWinPosId": 1},  # a window definition, no text
+        {"tStartMs": 1000, "dDurationMs": 3000, "segs": [{"utf8": "hello"}, {"utf8": " world", "tOffsetMs": 400}]},
+        {"tStartMs": 4000, "dDurationMs": 500, "segs": [{"utf8": "\n"}]},  # scroll marker
+        {"tStartMs": 4500, "dDurationMs": 1500, "segs": [{"utf8": "  second\ncue  "}]},
+        {"dDurationMs": 100, "segs": [{"utf8": "no start"}]},
+    ]}
+
+    segments = fetch.parse_json3_captions(json.dumps(data))
+
+    assert [(s.idx, s.start_s, s.end_s, s.text) for s in segments] == [
+        (0, 1.0, 4.0, "hello world"),
+        (1, 4.5, 6.0, "second cue"),
+    ]
+
+
+def test_fetch_auto_caption_segments_downloads_and_parses(monkeypatch):
+    class Resp:
+        text = '{"events": [{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "hi"}]}]}'
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(fetch.httpx, "get", lambda url, **kw: Resp())
+    assert [s.text for s in fetch.fetch_auto_caption_segments("http://x/a.json3")] == ["hi"]
+

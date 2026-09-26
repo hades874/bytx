@@ -1,0 +1,27 @@
+{
+  "id": "ikQkCJZJhqc",
+  "url": "https://www.youtube.com/watch?v=ikQkCJZJhqc",
+  "platform": "youtube",
+  "title": "Australia vs New Zealand | Study, Cost, Visa & PR Compared | Study In Australia From Bangladesh",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260208",
+  "duration": 486.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 774,
+    "duration_s": 486.0,
+    "words_per_minute": 95.556,
+    "coverage": 1.0,
+    "gaps": [],
+    "segments": 17,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "quE-o478dsg",
+  "url": "https://www.youtube.com/watch?v=quE-o478dsg",
+  "platform": "youtube",
+  "title": "Best Country To Study Abroad from Bangladesh in 2026 🇧🇩 | Cost, Visa, Jobs & PR!!",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260711",
+  "duration": 716.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1304,
+    "duration_s": 716.0,
+    "words_per_minute": 109.274,
+    "coverage": 0.991,
+    "gaps": [],
+    "segments": 24,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

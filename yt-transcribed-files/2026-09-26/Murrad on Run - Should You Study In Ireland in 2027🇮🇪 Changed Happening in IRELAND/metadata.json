@@ -1,0 +1,27 @@
+{
+  "id": "FWLMgo26Fuo",
+  "url": "https://www.youtube.com/watch?v=FWLMgo26Fuo",
+  "platform": "youtube",
+  "title": "Should You Study In Ireland in 2027🇮🇪? Changed Happening in IRELAND",
+  "channel": "Murrad on Run",
+  "channel_id": "UCnj05A7-L71QjMPnGabcLJw",
+  "upload_date": "20260913",
+  "duration": 574.0,
+  "language": "en",
+  "source": "asr",
+  "asr_model": "large-v3-turbo",
+  "transcribed_at": null,
+  "glossary_replacements": 3,
+  "quality": {
+    "words": 1540,
+    "duration_s": 574.0,
+    "words_per_minute": 160.976,
+    "coverage": 0.999,
+    "gaps": [],
+    "segments": 52,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

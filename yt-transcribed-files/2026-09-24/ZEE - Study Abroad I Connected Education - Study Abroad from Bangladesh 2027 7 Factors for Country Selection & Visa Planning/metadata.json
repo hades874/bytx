@@ -1,0 +1,27 @@
+{
+  "id": "_VoJgx0EddY",
+  "url": "https://www.youtube.com/watch?v=_VoJgx0EddY",
+  "platform": "youtube",
+  "title": "Study Abroad from Bangladesh 2027:7 Factors for Country Selection & Visa Planning",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260910",
+  "duration": 552.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 971,
+    "duration_s": 552.0,
+    "words_per_minute": 105.543,
+    "coverage": 0.99,
+    "gaps": [],
+    "segments": 19,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

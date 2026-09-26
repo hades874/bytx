@@ -13,7 +13,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from . import export, langs, pipeline, platforms, rag, store
+from . import compare as compare_module
+from . import export, fetch, langs, pipeline, platforms, quality, rag, store
 from .config import Config, load_config
 from .cuda_dll import ensure_cuda_dll_paths
 from .llm import OllamaClient, OllamaError
@@ -467,6 +468,211 @@ def retry(config: str | None = _config_option) -> None:
     conn = _conn(cfg)
     count = pipeline.retry_failed(conn)
     console.print(f"Requeued {count} failed video(s).")
+
+
+@app.command(name="quality")
+def quality_cmd(
+    video_id: str | None = typer.Argument(None, help="One video to inspect in detail"),
+    flagged: bool = typer.Option(False, "--flagged", help="Only list transcripts with quality flags"),
+    config: str | None = _config_option,
+) -> None:
+    """Show how far each transcript can be trusted (words/min, gaps, low-confidence clips)."""
+    cfg = _load(config)
+    conn = _conn(cfg)
+    if video_id is not None:
+        video = store.get_video(conn, video_id)
+        if video is None:
+            console.print(f"[red]No such video: {video_id}[/red]")
+            raise typer.Exit(1)
+        videos = [video]
+    else:
+        videos = [v for v in store.list_videos(conn) if v.status not in ("queued", "failed")]
+
+    rows = []
+    for v in videos:
+        segments = store.get_segments(conn, v.id)
+        if segments:
+            rows.append((v, quality.assess(v, segments, cfg.quality)))
+    rows.sort(key=lambda r: (not r[1].suspect, r[0].created_at or ""))  # flagged first
+    if flagged:
+        rows = [r for r in rows if r[1].suspect]
+    if not rows:
+        console.print("No transcripts have quality flags." if flagged else "No transcripts to assess.")
+        return
+
+    if video_id is not None:
+        _print_quality_detail(*rows[0])
+        return
+
+    table = Table(title="Transcript quality")
+    table.add_column("ID", no_wrap=True)
+    table.add_column("Title")
+    table.add_column("Words/min", justify="right", no_wrap=True)
+    table.add_column("Covered", justify="right", no_wrap=True)
+    table.add_column("Gaps", justify="right", no_wrap=True)
+    table.add_column("Low-conf", justify="right", no_wrap=True)
+    table.add_column("Flags")
+    for v, q in rows:
+        table.add_row(
+            v.id, escape((v.title or "")[:40]),
+            f"{q.words_per_minute:.0f}" if q.words_per_minute is not None else "",
+            f"{q.coverage:.0%}" if q.coverage is not None else "",
+            str(len(q.gaps)),
+            str(len(q.low_confidence)) if q.confidence_known else "-",
+            escape("; ".join(q.flags)),
+        )
+    console.print(table)
+    console.print(f"{sum(1 for _v, q in rows if q.suspect)} of {len(rows)} transcript(s) flagged.")
+
+
+def _print_quality_detail(video: store.Video, q: quality.Quality) -> None:
+    console.print(f"[bold]{escape(video.title or video.id)}[/bold]  ({video.url})")
+    wpm = f"{q.words_per_minute:.0f}" if q.words_per_minute is not None else "?"
+    cov = f"{q.coverage:.0%}" if q.coverage is not None else "?"
+    console.print(f"{q.words} words, {wpm} words/min, {cov} of the video covered, {q.segments} clips")
+    if q.confidence_known:
+        console.print(
+            f"mean clip log-probability {q.mean_avg_logprob:.2f}; {len(q.low_confidence)} low-confidence"
+        )
+    else:
+        console.print(
+            "[dim]No per-clip confidence recorded (transcribed before it was tracked, "
+            "or from subtitles).[/dim]"
+        )
+    for g in q.gaps:
+        span = f"{quality.format_time(g.start_s)}-{quality.format_time(g.end_s)}"
+        console.print(f"  gap {span} ({g.seconds:.0f}s)")
+    for idx in q.low_confidence:
+        console.print(f"  low-confidence clip #{idx}")
+    for flag in q.flags:
+        console.print(f"[yellow]! {escape(flag)}[/yellow]")
+    if not q.flags:
+        console.print("[green]No quality flags.[/green]")
+
+
+@app.command()
+def reexport(
+    video_ids: list[str] = typer.Argument(None, help="Videos to rewrite"),
+    all_: bool = typer.Option(False, "--all", help="Rewrite every transcribed video"),
+    config: str | None = _config_option,
+) -> None:
+    """Rebuild transcript folders and INDEX.md from the database (no speech recognition).
+
+    Rewrites data/videos/<id>/ and yt-transcribed-files/ in the current layout, with
+    metadata, quality flags and the glossary-cleaned copy. Run it after editing
+    glossary.txt or the [quality] thresholds.
+    """
+    if not video_ids and not all_:
+        console.print("[red]Give one or more video ids, or --all.[/red]")
+        raise typer.Exit(1)
+    cfg = _load(config)
+    conn = _conn(cfg)
+    done = pipeline.reexport(conn, cfg, None if all_ else list(video_ids))
+    console.print(f"Rewrote {len(done)} transcript(s) under {cfg.paths.transcribed_files_dir}.")
+    skipped = [i for i in (video_ids or []) if i not in done]
+    if skipped:
+        console.print(f"[yellow]Skipped (unknown or not transcribed): {', '.join(skipped)}[/yellow]")
+
+
+def _load_reference(
+    video: store.Video, cfg: Config, against: str | None
+) -> tuple[list[store.Segment], str]:
+    """The second transcript to compare with, and a name for it."""
+    if against:
+        path = Path(against)
+        if not path.is_file():
+            console.print(f"[red]No such file: {against}[/red]")
+            raise typer.Exit(1)
+        text = path.read_text(encoding="utf-8")
+        parse = fetch.parse_json3_captions if path.suffix.lower() == ".json3" else fetch.parse_vtt
+        return parse(text), path.name
+
+    if video.platform != platforms.YOUTUBE:
+        console.print("[red]Only YouTube videos have auto-captions to compare with. Use --against.[/red]")
+        raise typer.Exit(1)
+    language = video.language or cfg.asr.default_language
+    try:
+        info = fetch.get_video_info(video.url, cfg)
+        caption_url = info.auto_subtitles.get(language)
+        if caption_url is not None:
+            return fetch.fetch_auto_caption_segments(caption_url), "YouTube auto-captions"
+    except Exception as exc:  # noqa: BLE001 - yt-dlp and httpx raise many kinds of errors
+        console.print(f"[red]Could not fetch auto-captions: {escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    heard = info.auto_spoken_language
+    reason = (
+        f"YouTube hears this video as {heard!r}, not {langs.display_name(language)}, so its "
+        "auto-captions are in another language"
+        if heard
+        else f"YouTube has no {langs.display_name(language)} auto-captions for this video"
+    )
+    console.print(f"[red]{reason}. Use --against with a caption file.[/red]")
+    raise typer.Exit(1)
+
+
+@app.command(name="compare")
+def compare_cmd(
+    video_id: str,
+    against: str | None = typer.Option(
+        None, "--against",
+        help="Compare with this caption file (WebVTT, or YouTube .json3) instead of "
+        "fetching YouTube's auto-captions",
+    ),
+    threshold: float = typer.Option(
+        compare_module.DEFAULT_THRESHOLD, "--threshold", min=0.0, max=1.0,
+        help="Report segments less similar than this (0-1)",
+    ),
+    output: str | None = typer.Option(
+        None, "--output", help="Write the report here (default: compare.md in the transcript folder)"
+    ),
+    config: str | None = _config_option,
+) -> None:
+    """Cross-check a transcript against an independent one to find likely errors.
+
+    Compares each segment with YouTube's auto-generated captions for the same
+    moment. Where the two disagree is where a name, number or sentence is most
+    likely wrong; it is a spot to listen to, not proof. YouTube's Bangla captions
+    are weak, so this is most useful for English and mixed-language videos.
+    """
+    cfg = _load(config)
+    conn = _conn(cfg)
+    video = store.get_video(conn, video_id)
+    segments = store.get_segments(conn, video_id) if video else []
+    if video is None or not segments:
+        console.print(f"[red]No transcript for video: {video_id}[/red]")
+        raise typer.Exit(1)
+
+    reference, reference_name = _load_reference(video, cfg, against)
+    result = compare_module.compare(segments, reference, threshold)
+    report = compare_module.render_markdown(video, result, reference_name, threshold)
+    if output:
+        target: Path | None = Path(output)
+    else:
+        folder = export.find_transcript_folder(cfg.paths.transcribed_files_dir, video_id)
+        target = folder / "compare.md" if folder else None
+    if target is not None:
+        target.write_text(report, encoding="utf-8")
+
+    if result.mean_similarity is None:
+        console.print(
+            "[yellow]The captions have no text inside any transcript segment; nothing to compare.[/yellow]"
+        )
+    else:
+        console.print(
+            f"Mean similarity {result.mean_similarity:.0%} over {result.compared} segments; "
+            f"{len(result.disagreements)} below {threshold:.0%}; "
+            f"{len(result.missed)} stretch(es) of captioned speech missing from the transcript."
+        )
+    for d in result.disagreements[:5]:
+        console.print(f"[dim]{quality.format_time(d.start_s)}[/dim] {d.similarity:.0%}")
+        console.print(f"  transcript: {escape(d.text)}")
+        console.print(f"  captions:   {escape(d.ref_text)}")
+    if len(result.disagreements) > 5:
+        console.print(f"[dim]... and {len(result.disagreements) - 5} more[/dim]")
+    if target is not None:
+        console.print(f"Full report: {target}")
+    else:
+        console.print("[dim]Pass --output to save the full report.[/dim]")
 
 
 @app.command()

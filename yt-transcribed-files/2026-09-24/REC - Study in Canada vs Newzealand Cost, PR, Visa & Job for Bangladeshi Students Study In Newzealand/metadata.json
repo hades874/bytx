@@ -1,0 +1,27 @@
+{
+  "id": "Z7QevDjB0GY",
+  "url": "https://www.youtube.com/watch?v=Z7QevDjB0GY",
+  "platform": "youtube",
+  "title": "Study in Canada vs Newzealand | Cost, PR, Visa & Job for Bangladeshi Students | Study In Newzealand",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260531",
+  "duration": 1313.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 2270,
+    "duration_s": 1313.0,
+    "words_per_minute": 103.732,
+    "coverage": 1.0,
+    "gaps": [],
+    "segments": 44,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

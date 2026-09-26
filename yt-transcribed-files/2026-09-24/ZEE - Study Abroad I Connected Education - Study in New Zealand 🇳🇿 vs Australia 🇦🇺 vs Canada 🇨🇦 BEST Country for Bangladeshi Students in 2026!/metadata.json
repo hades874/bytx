@@ -1,0 +1,27 @@
+{
+  "id": "dyF8DYTS2n0",
+  "url": "https://www.youtube.com/watch?v=dyF8DYTS2n0",
+  "platform": "youtube",
+  "title": "Study in New Zealand 🇳🇿 vs Australia 🇦🇺 vs Canada 🇨🇦 BEST Country for Bangladeshi Students in 2026!",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260826",
+  "duration": 471.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 776,
+    "duration_s": 471.0,
+    "words_per_minute": 98.854,
+    "coverage": 0.987,
+    "gaps": [],
+    "segments": 16,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

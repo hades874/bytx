@@ -1,0 +1,27 @@
+{
+  "id": "NPEbHmQza-4",
+  "url": "https://www.youtube.com/watch?v=NPEbHmQza-4",
+  "platform": "youtube",
+  "title": "Australia 2026 The Right Time to Study Abroad | Study In Australia | Study, Cost, Visa & PR",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260220",
+  "duration": 808.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1368,
+    "duration_s": 808.0,
+    "words_per_minute": 101.584,
+    "coverage": 1.0,
+    "gaps": [],
+    "segments": 27,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

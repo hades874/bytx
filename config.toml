@@ -63,6 +63,14 @@ no_repeat_ngram_size = 0
 # Optional comma-separated hotwords/subject terms to bias decoding, e.g. "কোয়ান্টাম, নিউটন"
 # or "Kubernetes, PyTorch". Applied to every language, so leave empty for mixed libraries.
 initial_prompt = ""
+# Vocabulary of names/acronyms/jargon (see glossary.txt for the format). Its terms
+# prime the decoder for the languages below, and its known mis-hearings are fixed
+# in a *cleaned copy* of each transcript (transcript.clean.txt); the raw ASR text is
+# never modified. "" disables it. Priming can make a fine-tuned model echo the
+# prompt, so Bangla is opt-in: check with `bytx bench` before adding "bn".
+glossary = "glossary.txt"
+glossary_prompt_languages = ["en"]
+glossary_prompt_max_chars = 300
 
 # Which model transcribes each language. A video's language is set with
 # `bytx add --lang bn|en` (default: asr.default_language).
@@ -83,6 +91,15 @@ already_ct2 = true
 # English is ~0.3 tokens/char (vs ~0.7 for Bengali), so longer clips stay under
 # Whisper's 224-token cap and give the decoder more context.
 max_clip_seconds = 15
+
+# Thresholds for flagging a transcript as suspect (`bytx quality`, warnings on `run`,
+# and the flags in each transcript's metadata.json).
+[quality]
+min_wpm = 70            # fewer words/minute than this: speech was probably dropped
+max_wpm = 220           # more than this: probably repeated or hallucinated text
+max_gap_seconds = 10    # a longer stretch with no text, also at the start or end
+min_avg_logprob = -1.0  # clips with a lower mean token log-probability are low-confidence
+max_no_speech_prob = 0.6
 
 [fetch]
 # Skip uploader (human) subtitles and always run ASR when true.

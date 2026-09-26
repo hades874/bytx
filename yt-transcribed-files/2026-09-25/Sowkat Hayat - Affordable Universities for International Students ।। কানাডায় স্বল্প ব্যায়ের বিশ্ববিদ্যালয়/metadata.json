@@ -1,0 +1,27 @@
+{
+  "id": "f6CjXF1zn3I",
+  "url": "https://www.youtube.com/watch?v=f6CjXF1zn3I",
+  "platform": "youtube",
+  "title": "Affordable Universities for International Students ।। কানাডায় স্বল্প ব্যায়ের বিশ্ববিদ্যালয়",
+  "channel": "Sowkat Hayat",
+  "channel_id": "UCCGIh_-Q0dwfeSyHi-li6nA",
+  "upload_date": "20230718",
+  "duration": 281.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 554,
+    "duration_s": 281.0,
+    "words_per_minute": 118.292,
+    "coverage": 0.948,
+    "gaps": [],
+    "segments": 29,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

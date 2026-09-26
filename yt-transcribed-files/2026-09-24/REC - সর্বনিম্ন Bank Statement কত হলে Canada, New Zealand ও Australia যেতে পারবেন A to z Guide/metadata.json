@@ -1,0 +1,35 @@
+{
+  "id": "s1jd00t1Mgs",
+  "url": "https://www.youtube.com/watch?v=s1jd00t1Mgs",
+  "platform": "youtube",
+  "title": "সর্বনিম্ন Bank Statement কত হলে Canada, New Zealand ও Australia যেতে পারবেন? A to z Guide",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260418",
+  "duration": 820.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1498,
+    "duration_s": 820.0,
+    "words_per_minute": 109.61,
+    "coverage": 0.986,
+    "gaps": [
+      {
+        "start": 808.72,
+        "end": 820.0,
+        "seconds": 11.3
+      }
+    ],
+    "segments": 27,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": [
+      "1 gap(s) over 10s with no text (longest 11s at 13:28)"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "x4_5CXETOlo",
+  "url": "https://www.youtube.com/watch?v=x4_5CXETOlo",
+  "platform": "youtube",
+  "title": "Cost of Studying in Canada 2026 for Bangladeshi Students | What They Don't Tell You | Harsh Reality",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260807",
+  "duration": 529.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1014,
+    "duration_s": 529.0,
+    "words_per_minute": 115.009,
+    "coverage": 0.983,
+    "gaps": [],
+    "segments": 18,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

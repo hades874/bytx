@@ -1,0 +1,27 @@
+{
+  "id": "-3mCQOBCn-w",
+  "url": "https://www.youtube.com/watch?v=-3mCQOBCn-w",
+  "platform": "youtube",
+  "title": "Europe Student Visa 2026: Why This Country Is the Last Option | Visa Rejection | Rejected In Canada",
+  "channel": "REC",
+  "channel_id": "UCAQRYYMY0da_PzC_xZMS_xw",
+  "upload_date": "20260717",
+  "duration": 499.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 894,
+    "duration_s": 499.0,
+    "words_per_minute": 107.495,
+    "coverage": 0.982,
+    "gaps": [],
+    "segments": 17,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

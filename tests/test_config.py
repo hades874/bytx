@@ -170,3 +170,43 @@ def test_auto_english_threshold_defaults_to_the_measured_gap(tmp_path):
 def test_auto_english_threshold_is_configurable(tmp_path):
     cfg = write_config(tmp_path, '[asr]\nauto_english_below = 0.15\n' + _TWO_MODELS)
     assert cfg.asr.auto_english_below == 0.15
+
+
+# --- glossary and quality settings ---------------------------------------------------
+
+def test_shipped_config_enables_the_glossary_for_english_only():
+    cfg = load_config(SHIPPED_CONFIG)
+    assert cfg.asr.glossary == SHIPPED_CONFIG.parent / "glossary.txt"
+    assert cfg.asr.glossary.is_file()
+    assert cfg.asr.glossary_prompt_languages == ("en",)  # Bangla priming is opt-in
+    assert cfg.asr.glossary_prompt_max_chars == 300
+
+
+def test_glossary_defaults_when_unset(tmp_path):
+    cfg = write_config(tmp_path, _TWO_MODELS)
+    assert cfg.asr.glossary == tmp_path / "glossary.txt"
+    assert cfg.asr.glossary_prompt_languages == ("en",)
+
+
+def test_glossary_can_be_disabled_with_an_empty_path(tmp_path):
+    assert write_config(tmp_path, '[asr]\nglossary = ""\n' + _TWO_MODELS).asr.glossary is None
+
+
+def test_glossary_prompt_languages_are_parsed_and_validated(tmp_path):
+    cfg = write_config(tmp_path, '[asr]\nglossary_prompt_languages = ["bn", "en"]\n' + _TWO_MODELS)
+    assert cfg.asr.glossary_prompt_languages == ("bn", "en")
+    with pytest.raises(ValueError, match="glossary_prompt_languages"):
+        write_config(tmp_path, '[asr]\nglossary_prompt_languages = ["fr"]\n' + _TWO_MODELS)
+
+
+def test_quality_thresholds_default_and_are_configurable(tmp_path):
+    cfg = write_config(tmp_path, _TWO_MODELS)
+    assert (cfg.quality.min_wpm, cfg.quality.max_wpm, cfg.quality.max_gap_seconds) == (70, 220, 10)
+    custom = write_config(tmp_path, "[quality]\nmin_wpm = 90\nmax_gap_seconds = 5\n" + _TWO_MODELS)
+    assert (custom.quality.min_wpm, custom.quality.max_gap_seconds, custom.quality.max_wpm) == (90, 5, 220)
+
+
+def test_shipped_config_quality_matches_the_documented_defaults():
+    from bytx.config import QualityConfig
+
+    assert load_config(SHIPPED_CONFIG).quality == QualityConfig()

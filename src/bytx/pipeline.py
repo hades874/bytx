@@ -15,7 +15,12 @@ uploader subtitles are used. It is set with `bytx add --lang` (default:
 YouTube's metadata both mislabel Bangla speech that is full of English words
 as English, so neither is used. `--lang auto` instead queues the video with no
 language and the run decides it by transcribing a sample with the Bangla model
-(see langdetect.py).
+(see langdetect.py). Nothing ever auto-detects per chunk, so the language of
+a transcript is always a deliberate, recorded choice.
+
+After transcription every video also gets a quality assessment (quality.py) and a
+glossary-cleaned copy of its text (glossary.py); the raw ASR text stays the source
+of truth. `reexport` rebuilds all of those files from the database.
 """
 
 from __future__ import annotations
@@ -24,7 +29,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export, fetch, langdetect, langs, ledger, platforms, rag, store, summarize
+from . import export, fetch, langdetect, langs, ledger, platforms, quality, rag, store, summarize
+from . import glossary as glossary_mod
 from .config import Config
 from .llm import OllamaClient
 from .transcribe import TranscriberPool, TranscribeStats
@@ -115,6 +121,30 @@ def _warn_on_suspect_asr(info: fetch.VideoInfo, stats: TranscribeStats) -> None:
         )
 
 
+def write_transcript_files(
+    cfg: Config, video: store.Video, segments: list[store.Segment], summary: str | None = None
+) -> quality.Quality:
+    """Writes data/videos/<id>/ (info + every transcript format) for a
+    transcribed video and returns its quality assessment."""
+    assessment = quality.assess(video, segments, cfg.quality)
+    export.write_info_json(cfg.paths.videos_dir, video)
+    export.write_all(cfg.paths.videos_dir, video, segments, summary=summary, quality=assessment)
+    return assessment
+
+
+def write_shared_copy(
+    cfg: Config, video: store.Video, segments: list[store.Segment], assessment: quality.Quality
+) -> None:
+    """Writes the human-facing copy under transcribed_files_dir (with a glossary-cleaned
+    transcript alongside the raw one) and refreshes its INDEX.md."""
+    cleaned, replacements = glossary_mod.load(cfg.asr.glossary).apply_segments(segments)
+    export.write_transcript_copy(
+        cfg.paths.transcribed_files_dir, video, segments, quality=assessment,
+        cleaned=cleaned, glossary_replacements=replacements,
+    )
+    export.write_index(cfg.paths.transcribed_files_dir)
+
+
 def detect_one(conn, cfg: Config, pool: TranscriberPool, video: store.Video) -> Path:
     """Decides the language of a video queued with `--lang auto` and stores
     it. The audio is downloaded for this, so its path is returned for the
@@ -189,14 +219,15 @@ def transcribe_one(
     store.set_video_source(conn, video.id, source, asr_model)
     updated = store.get_video(conn, video.id)
     assert updated is not None
-    export.write_info_json(cfg.paths.videos_dir, updated)
-    export.write_all(cfg.paths.videos_dir, updated, segments)
+    assessment = write_transcript_files(cfg, updated, segments)
+    for flag in assessment.flags:
+        logger.warning("%s: %s", video.id, flag)
     store.set_video_status(conn, video.id, "transcribed")
 
     # Best-effort extras: the transcript is already safe in the DB, so a
     # locked file or over-long path here must not mark the video failed.
     try:
-        export.write_transcript_copy(cfg.paths.transcribed_files_dir, updated, segments)
+        write_shared_copy(cfg, updated, segments, assessment)
     except Exception:  # noqa: BLE001
         logger.warning("Could not write transcript copy for %s", video.id, exc_info=True)
     try:
@@ -289,6 +320,27 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
                 )
 
     return result
+
+
+def reexport(conn, cfg: Config, video_ids: list[str] | None = None) -> list[str]:
+    """Rewrites the transcript files (data/videos/<id>/ and the shared copy,
+    plus INDEX.md) of already transcribed videos from the database, without
+    running ASR again. Picks up the current layout, glossary and quality
+    thresholds. `video_ids` limits it to those videos (unknown or untranscribed
+    ids are skipped). Returns the ids that were rewritten."""
+    if video_ids is None:
+        videos = [v for v in store.list_videos(conn) if v.status != "queued"]
+    else:
+        videos = [v for v in (store.get_video(conn, i) for i in video_ids) if v is not None]
+    done: list[str] = []
+    for video in videos:
+        segments = store.get_segments(conn, video.id)
+        if not segments:
+            continue
+        assessment = write_transcript_files(cfg, video, segments, summary=store.get_summary(conn, video.id))
+        write_shared_copy(cfg, video, segments, assessment)
+        done.append(video.id)
+    return done
 
 
 def retry_failed(conn) -> int:

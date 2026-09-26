@@ -1,0 +1,27 @@
+{
+  "id": "Zb-yaMxVU9Y",
+  "url": "https://www.youtube.com/watch?v=Zb-yaMxVU9Y",
+  "platform": "youtube",
+  "title": "কানাডায় masters course এ আসা ভুল decision হবে কি? ||Reality check for masters courses in Canada",
+  "channel": "Kotha’s vlog",
+  "channel_id": "UChHVFGo5FKotbQUSHxGT5sg",
+  "upload_date": "20260806",
+  "duration": 938.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 1771,
+    "duration_s": 938.0,
+    "words_per_minute": 113.284,
+    "coverage": 1.0,
+    "gaps": [],
+    "segments": 32,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}

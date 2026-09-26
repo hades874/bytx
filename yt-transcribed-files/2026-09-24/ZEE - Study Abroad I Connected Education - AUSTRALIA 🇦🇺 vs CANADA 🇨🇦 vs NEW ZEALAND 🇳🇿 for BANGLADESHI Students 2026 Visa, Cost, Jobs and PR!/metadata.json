@@ -1,0 +1,27 @@
+{
+  "id": "pSA9EaQZLM4",
+  "url": "https://www.youtube.com/watch?v=pSA9EaQZLM4",
+  "platform": "youtube",
+  "title": "AUSTRALIA 🇦🇺 vs CANADA 🇨🇦 vs NEW ZEALAND 🇳🇿 for BANGLADESHI Students 2026: Visa, Cost, Jobs and PR!",
+  "channel": "ZEE - Study Abroad I Connected Education ",
+  "channel_id": "UCPl2q7ETEPYNn_NSRD68HJg",
+  "upload_date": "20260729",
+  "duration": 536.0,
+  "language": "bn",
+  "source": "asr",
+  "asr_model": "tugstugi-medium-bn",
+  "transcribed_at": null,
+  "glossary_replacements": 0,
+  "quality": {
+    "words": 917,
+    "duration_s": 536.0,
+    "words_per_minute": 102.649,
+    "coverage": 0.99,
+    "gaps": [],
+    "segments": 18,
+    "low_confidence": [],
+    "confidence_known": false,
+    "mean_avg_logprob": null,
+    "flags": []
+  }
+}
