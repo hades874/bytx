@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import platforms
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS videos (
     asr_model TEXT,
     language TEXT,
     platform TEXT NOT NULL DEFAULT 'youtube',
+    transcribed_at TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -55,7 +56,9 @@ CREATE TABLE IF NOT EXISTS segments (
     idx INTEGER NOT NULL,
     start_s REAL NOT NULL,
     end_s REAL NOT NULL,
-    text TEXT NOT NULL
+    text TEXT NOT NULL,
+    avg_logprob REAL,
+    no_speech_prob REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_segments_video_id ON segments(video_id);
@@ -124,6 +127,7 @@ class Video:
     asr_model: str | None = None
     language: str | None = None
     platform: str = platforms.YOUTUBE
+    transcribed_at: str | None = None
     status: str = "queued"
     error: str | None = None
     attempts: int = 0
@@ -143,6 +147,11 @@ class Segment:
     text: str
     video_id: str | None = None
     id: int | None = None
+    # ASR confidence for the clip this segment was decoded from: mean token
+    # log-probability (closer to 0 is surer) and the model's chance that the
+    # clip holds no speech. None for human subtitles and pre-v4 transcripts.
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
 
 
 @dataclass
@@ -195,6 +204,12 @@ def _migrate(conn: sqlite3.Connection, from_version: int) -> None:
         # v3 adds videos.platform. Before it, bytx only handled YouTube, so the
         # column's default ('youtube') is right for every existing row.
         _add_column_if_missing(conn, "videos", "platform", "TEXT NOT NULL DEFAULT 'youtube'")
+    if from_version < 4:
+        # v4 adds per-clip ASR confidence and the time a transcript was made.
+        # Older transcripts simply have none of it (NULL).
+        _add_column_if_missing(conn, "segments", "avg_logprob", "REAL")
+        _add_column_if_missing(conn, "segments", "no_speech_prob", "REAL")
+        _add_column_if_missing(conn, "videos", "transcribed_at", "TEXT")
 
 
 @contextmanager
@@ -303,6 +318,7 @@ def set_video_status(
 def set_video_source(conn: sqlite3.Connection, video_id: str, source: str, asr_model: str | None) -> None:
     conn.execute(
         "UPDATE videos SET source = ?, asr_model = ?, "
+        "transcribed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
         "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
         (source, asr_model, video_id),
     )
@@ -324,8 +340,12 @@ def replace_segments(conn: sqlite3.Connection, video_id: str, segments: Sequence
     with transaction(conn):
         conn.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
         conn.executemany(
-            "INSERT INTO segments (video_id, idx, start_s, end_s, text) VALUES (?, ?, ?, ?, ?)",
-            [(video_id, s.idx, s.start_s, s.end_s, s.text) for s in segments],
+            "INSERT INTO segments (video_id, idx, start_s, end_s, text, avg_logprob, no_speech_prob) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (video_id, s.idx, s.start_s, s.end_s, s.text, s.avg_logprob, s.no_speech_prob)
+                for s in segments
+            ],
         )
 
 
@@ -337,6 +357,7 @@ def get_segments(conn: sqlite3.Connection, video_id: str) -> list[Segment]:
         Segment(
             id=r["id"], video_id=r["video_id"], idx=r["idx"],
             start_s=r["start_s"], end_s=r["end_s"], text=r["text"],
+            avg_logprob=r["avg_logprob"], no_speech_prob=r["no_speech_prob"],
         )
         for r in rows
     ]

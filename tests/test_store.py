@@ -232,7 +232,7 @@ def _v1_database(path):
 
 
 def test_new_database_is_created_at_the_current_schema_version(conn):
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION == 3
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION == 4
     columns = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
     assert {"language", "platform"} <= columns
 
@@ -443,3 +443,45 @@ def test_list_videos_filters_by_platform(conn):
     assert [v.id for v in store.list_videos(conn, platform="facebook")] == ["fb_123456789012345"]
     assert [v.id for v in store.list_videos(conn, platform="youtube")] == ["aaaaaaaaaaa"]
     assert len(store.list_videos(conn)) == 2
+
+
+# --- v4: per-clip confidence and transcribed_at ---------------------------------
+
+def test_segment_confidence_round_trips(conn):
+    store.upsert_video(conn, make_video())
+    store.replace_segments(conn, "abc123", [
+        store.Segment(idx=0, start_s=0, end_s=2, text="a", avg_logprob=-0.42, no_speech_prob=0.03),
+        store.Segment(idx=1, start_s=2, end_s=4, text="b"),  # human subtitles have none
+    ])
+    first, second = store.get_segments(conn, "abc123")
+    assert (first.avg_logprob, first.no_speech_prob) == (-0.42, 0.03)
+    assert (second.avg_logprob, second.no_speech_prob) == (None, None)
+
+
+def test_set_video_source_stamps_transcribed_at(conn):
+    store.upsert_video(conn, make_video())
+    assert store.get_video(conn, "abc123").transcribed_at is None
+    store.set_video_source(conn, "abc123", "asr", "m")
+    assert store.get_video(conn, "abc123").transcribed_at.startswith("20")
+
+
+def test_v3_database_gains_the_v4_columns_and_keeps_its_segments(tmp_path):
+    path = tmp_path / "library.db"
+    c = store.connect(path)  # build a real, populated database, then rewind it to v3
+    store.upsert_video(c, make_video("asr1"))
+    store.replace_segments(c, "asr1", [store.Segment(idx=0, start_s=0, end_s=1, text="old text")])
+    c.execute("ALTER TABLE segments DROP COLUMN avg_logprob")
+    c.execute("ALTER TABLE segments DROP COLUMN no_speech_prob")
+    c.execute("ALTER TABLE videos DROP COLUMN transcribed_at")
+    c.execute("UPDATE schema_version SET version = 3")
+    c.commit()
+    c.close()
+
+    c = store.connect(path)
+
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION
+    (seg,) = store.get_segments(c, "asr1")
+    assert (seg.text, seg.avg_logprob, seg.no_speech_prob) == ("old text", None, None)
+    assert store.get_video(c, "asr1").transcribed_at is None
+    store.replace_segments(c, "asr1", [store.Segment(idx=0, start_s=0, end_s=1, text="new", avg_logprob=-0.1)])
+    assert store.get_segments(c, "asr1")[0].avg_logprob == -0.1

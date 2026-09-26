@@ -29,6 +29,7 @@ from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 
+from . import glossary as glossary_mod
 from . import store
 from .config import AsrConfig, AsrModelConfig, Config
 from .cuda_dll import ensure_cuda_dll_paths
@@ -154,6 +155,17 @@ def find_split_point(
     return best_idx
 
 
+def _weighted_logprob(segs) -> float | None:
+    """Mean `avg_logprob` of faster-whisper segments, weighted by their length
+    (equal weights when none has any, e.g. timestamps are off)."""
+    if not segs:
+        return None
+    weights = [max(seg.end - seg.start, 0.0) for seg in segs]
+    if sum(weights) <= 0:
+        weights = [1.0] * len(segs)
+    return sum(seg.avg_logprob * w for seg, w in zip(segs, weights, strict=True)) / sum(weights)
+
+
 @dataclass
 class TranscribeStats:
     """Diagnostics from one transcription run, used to flag suspect output."""
@@ -163,6 +175,18 @@ class TranscribeStats:
     truncated_unresolved: int = 0  # clips still at the limit at minimum size
     speech_seconds: float = 0.0
     audio_seconds: float = 0.0
+
+
+@dataclass
+class _Piece:
+    """Text decoded from audio[start:end] (sample indices), with the model's
+    confidence in it (None when the decode produced no scored segment)."""
+
+    start: int
+    end: int
+    text: str
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
 
 
 @dataclass
@@ -183,10 +207,17 @@ class Transcriber:
     stage and later GPU-using stages (e.g. Ollama) to free VRAM.
     """
 
-    def __init__(self, model_dir: Path, model_cfg: AsrModelConfig, asr_cfg: AsrConfig):
+    def __init__(
+        self,
+        model_dir: Path,
+        model_cfg: AsrModelConfig,
+        asr_cfg: AsrConfig,
+        glossary: glossary_mod.Glossary | None = None,
+    ):
         self.model_dir = model_dir
         self.model_cfg = model_cfg
         self.asr_cfg = asr_cfg
+        self.glossary = glossary
         self._model: WhisperModel | None = None
         self._device: str | None = None
         self._compute_type: str | None = None
@@ -302,10 +333,10 @@ class Transcriber:
         self._load()
         audio = decode_audio(str(audio_path), sampling_rate=SAMPLE_RATE)
         stats = TranscribeStats()
-        pieces: list[tuple[int, int, str]] = []
+        pieces: list[_Piece] = []
         for start, end in evenly_spaced(self._plan_clips(audio), clips):
             self._decode_range(audio, start, end, stats, pieces, language)
-        return " ".join(text for _s, _e, text in pieces)
+        return " ".join(p.text for p in pieces)
 
     def transcribe(self, audio_path: Path, language: str | None = None) -> TranscribeResult:
         language = self._resolve_language(language)
@@ -320,13 +351,16 @@ class Transcriber:
             speech_seconds=sum(e - s for s, e in clips) / SAMPLE_RATE,
             audio_seconds=len(audio) / SAMPLE_RATE,
         )
-        pieces: list[tuple[int, int, str]] = []
+        pieces: list[_Piece] = []
         for start, end in clips:
             self._decode_range(audio, start, end, stats, pieces, language)
 
         segments = [
-            store.Segment(idx=i, start_s=s / SAMPLE_RATE, end_s=e / SAMPLE_RATE, text=text)
-            for i, (s, e, text) in enumerate(pieces)
+            store.Segment(
+                idx=i, start_s=p.start / SAMPLE_RATE, end_s=p.end / SAMPLE_RATE, text=p.text,
+                avg_logprob=p.avg_logprob, no_speech_prob=p.no_speech_prob,
+            )
+            for i, p in enumerate(pieces)
         ]
         return TranscribeResult(
             segments=segments,
@@ -342,10 +376,10 @@ class Transcriber:
         start: int,
         end: int,
         stats: TranscribeStats,
-        out: list[tuple[int, int, str]],
+        out: list[_Piece],
         language: str,
     ) -> None:
-        """Decodes audio[start:end] into `out` as (start, end, text) pieces, in
+        """Decodes audio[start:end] into `out` as pieces, in
         time order. Splits the range in two (at its quietest point) when it is
         too long, or when the decoded text nears Whisper's token limit and so
         was probably cut off.
@@ -359,7 +393,9 @@ class Transcriber:
             self._decode_range(audio, mid, end, stats, out, language)
             return
 
-        text = self._decode_clip(audio[start:end], language)
+        piece = self._decode_clip(audio[start:end], language)
+        piece.start, piece.end = start, end
+        text = piece.text
         if text and self._nears_token_limit(text, language):
             if can_split:
                 stats.resplit += 1
@@ -369,9 +405,20 @@ class Transcriber:
                 return
             stats.truncated_unresolved += 1
         if text:
-            out.append((start, end, text))
+            out.append(piece)
 
-    def _decode_clip(self, clip: np.ndarray, language: str) -> str:
+    def _initial_prompt(self, language: str) -> str | None:
+        """The configured prompt plus, for languages that opt in, the glossary's terms."""
+        parts = [self.asr_cfg.initial_prompt]
+        if self.glossary and language in self.asr_cfg.glossary_prompt_languages:
+            parts.append(self.glossary.prompt(self.asr_cfg.glossary_prompt_max_chars))
+        return ", ".join(p for p in parts if p) or None
+
+    def _decode_clip(self, clip: np.ndarray, language: str) -> _Piece:
+        """Decodes one clip. The returned piece has no start/end yet (the caller
+        knows where the clip sits); its confidence is the duration-weighted mean
+        log-probability, and the highest no-speech probability, of the model's
+        segments for it."""
         assert self._model is not None
         segments_iter, _info = self._model.transcribe(
             clip,
@@ -382,10 +429,15 @@ class Transcriber:
             condition_on_previous_text=self.asr_cfg.condition_on_previous_text,
             repetition_penalty=self.asr_cfg.repetition_penalty,
             no_repeat_ngram_size=self.asr_cfg.no_repeat_ngram_size,
-            initial_prompt=self.asr_cfg.initial_prompt or None,
+            initial_prompt=self._initial_prompt(language),
         )
-        text = " ".join(seg.text.strip() for seg in segments_iter).strip()
-        return collapse_repeated_ngrams(text)
+        segs = list(segments_iter)
+        text = collapse_repeated_ngrams(" ".join(seg.text.strip() for seg in segs).strip())
+        return _Piece(
+            start=0, end=0, text=text,
+            avg_logprob=_weighted_logprob(segs),
+            no_speech_prob=max((seg.no_speech_prob for seg in segs), default=None),
+        )
 
     def _nears_token_limit(self, text: str, language: str) -> bool:
         tokenizer = getattr(self._model, "hf_tokenizer", None)
@@ -410,12 +462,15 @@ class TranscriberPool:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self._current: Transcriber | None = None
+        self._glossary = glossary_mod.load(cfg.asr.glossary)
 
     def _get(self, model_cfg: AsrModelConfig) -> Transcriber:
         if self._current is not None and self._current.model_cfg.key == model_cfg.key:
             return self._current
         self.unload()
-        self._current = Transcriber(self.cfg.paths.models_dir / model_cfg.key, model_cfg, self.cfg.asr)
+        self._current = Transcriber(
+            self.cfg.paths.models_dir / model_cfg.key, model_cfg, self.cfg.asr, self._glossary
+        )
         return self._current
 
     def for_language(self, language: str) -> Transcriber:

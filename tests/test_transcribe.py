@@ -58,6 +58,10 @@ class _FakeWhisperModel:
     clip_lengths: list[int] = []
     # Language passed to each real (non smoke-test) decode.
     languages: list[str | None] = []
+    # initial_prompt passed to each real decode.
+    prompts: list[str | None] = []
+    # (avg_logprob, no_speech_prob) reported for each decoded clip.
+    confidence = (-0.3, 0.02)
 
     class _Tokenizer:
         """One token per whitespace-separated word."""
@@ -93,9 +97,11 @@ class _FakeWhisperModel:
         class Seg:
             def __init__(self, start, end, text):
                 self.start, self.end, self.text = start, end, text
+                self.avg_logprob, self.no_speech_prob = _FakeWhisperModel.confidence
 
         _FakeWhisperModel.clip_lengths.append(len(audio))
         _FakeWhisperModel.languages.append(language)
+        _FakeWhisperModel.prompts.append(kwargs.get("initial_prompt"))
         return iter([Seg(0.0, len(audio) / SR, _FakeWhisperModel.respond(audio))]), info
 
 
@@ -107,6 +113,8 @@ def _patch_whisper_model(monkeypatch, tmp_path):
     _FakeWhisperModel.respond = staticmethod(lambda clip: "hello")
     _FakeWhisperModel.clip_lengths = []
     _FakeWhisperModel.languages = []
+    _FakeWhisperModel.prompts = []
+    _FakeWhisperModel.confidence = (-0.3, 0.02)
     monkeypatch.setattr(transcribe, "WhisperModel", _FakeWhisperModel)
     monkeypatch.setattr(transcribe, "ensure_cuda_dll_paths", lambda: [])
     (tmp_path / "model_marker").write_text("x")
@@ -114,7 +122,8 @@ def _patch_whisper_model(monkeypatch, tmp_path):
 
 
 def make_transcriber(tmp_path, device="auto", compute_type="float16", vad_filter=False,
-                     max_clip_seconds=12.0, language="bn", model_max_clip_seconds=None):
+                     max_clip_seconds=12.0, language="bn", model_max_clip_seconds=None,
+                     glossary=None, initial_prompt="", prompt_languages=("en",)):
     """`language` pins the model to a language; "" makes it multilingual."""
     model_cfg = AsrModelConfig(
         key="m", source="org/m", language=language, max_clip_seconds=model_max_clip_seconds
@@ -123,9 +132,10 @@ def make_transcriber(tmp_path, device="auto", compute_type="float16", vad_filter
         model="m", device=device, compute_type=compute_type, beam_size=1,
         vad_filter=vad_filter, vad_min_silence_ms=500, without_timestamps=True,
         condition_on_previous_text=False, repetition_penalty=1.1, no_repeat_ngram_size=3,
-        initial_prompt="", models={"m": model_cfg}, max_clip_seconds=max_clip_seconds,
+        initial_prompt=initial_prompt, models={"m": model_cfg}, max_clip_seconds=max_clip_seconds,
+        glossary_prompt_languages=prompt_languages,
     )
-    return transcribe.Transcriber(tmp_path, model_cfg, asr_cfg)
+    return transcribe.Transcriber(tmp_path, model_cfg, asr_cfg, glossary)
 
 
 def test_loads_with_requested_compute_type_when_it_works(tmp_path):
@@ -224,6 +234,50 @@ def test_transcribe_uses_real_clip_times_and_skips_silence(tmp_path, monkeypatch
     assert result.stats.speech_seconds == 7.0
     assert result.stats.audio_seconds == 30.0
     assert _FakeWhisperModel.clip_lengths == [3 * SR, 4 * SR]  # never the whole file
+
+
+def test_transcribe_stores_the_clips_confidence_on_each_segment(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    _FakeWhisperModel.confidence = (-0.75, 0.31)
+    result = make_transcriber(tmp_path).transcribe(Path("x.wav"))
+    assert [(s.avg_logprob, s.no_speech_prob) for s in result.segments] == [(-0.75, 0.31)]
+
+
+def test_weighted_logprob_weights_by_segment_length_and_handles_no_segments():
+    class Seg:
+        def __init__(self, start, end, lp):
+            self.start, self.end, self.avg_logprob = start, end, lp
+
+    assert transcribe._weighted_logprob([]) is None
+    assert transcribe._weighted_logprob([Seg(0, 1, -1.0), Seg(1, 4, -0.2)]) == pytest.approx(-0.4)
+    assert transcribe._weighted_logprob([Seg(0, 0, -1.0), Seg(0, 0, -0.5)]) == pytest.approx(-0.75)
+
+
+def _glossary():
+    from bytx import glossary
+
+    return glossary.parse(["TrustEd Ireland <= Trusted Ireland", "IRCC"])
+
+
+def test_glossary_terms_prime_the_decoder_for_enabled_languages(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    t = make_transcriber(
+        tmp_path, language="", glossary=_glossary(), initial_prompt="visa talk"
+    )
+    t.transcribe(Path("x.wav"), "en")
+    assert _FakeWhisperModel.prompts == ["visa talk, TrustEd Ireland, IRCC"]
+
+
+def test_glossary_does_not_prime_languages_that_did_not_opt_in(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    make_transcriber(tmp_path, glossary=_glossary()).transcribe(Path("x.wav"))  # pinned to bn
+    assert _FakeWhisperModel.prompts == [None]
+
+
+def test_no_prompt_without_glossary_or_initial_prompt(tmp_path, monkeypatch):
+    _patch_audio(monkeypatch, _silence(5))
+    make_transcriber(tmp_path, language="").transcribe(Path("x.wav"), "en")
+    assert _FakeWhisperModel.prompts == [None]
 
 
 def test_transcribe_no_speech_gives_no_segments(tmp_path, monkeypatch):

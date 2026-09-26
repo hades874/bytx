@@ -21,13 +21,17 @@ summarization/Q&A run on your own [Ollama][ollama] install.
 2. **Store** — everything lands in one SQLite database (`data/library.db`)
    plus a readable folder per video (`data/videos/<id>/`) with
    `transcript.txt` / `.srt` / `.vtt` / `.json`, `info.json`, and
-   `summary.md`. A second, human-browsable copy of each plain-text
-   transcript also lands in the git-tracked `yt-transcribed-files/` folder
-   (grouped in a `YYYY-MM-DD` folder for the day it was transcribed, then
-   one subfolder per video, named `<channel> - <title>`), and every
-   completed video is recorded in the git-tracked `TRANSCRIBED_LEDGER.md`
-   so a video is never silently re-transcribed, even if the gitignored
-   `data/` folder is deleted or the repo is cloned fresh.
+   `summary.md`. A second, human-browsable copy of each transcript also
+   lands in the git-tracked `yt-transcribed-files/` folder (grouped in a
+   `YYYY-MM-DD` folder for the day it was transcribed, then one subfolder
+   per video, named `<channel> - <title>`): the raw text, a timestamped `.vtt` and
+   `.json` (with per-clip confidence), a `metadata.json` (title, channel,
+   upload date, duration, model, quality flags), and a glossary-corrected
+   `transcript.clean.txt` when the glossary changed anything. A generated
+   `INDEX.md` lists them all. Every completed video is also recorded in the
+   git-tracked `TRANSCRIBED_LEDGER.md` so a video is never silently
+   re-transcribed, even if the gitignored `data/` folder is deleted or the
+   repo is cloned fresh. See [Trusting a transcript](#trusting-a-transcript).
 3. **Search** — keyword search (`bytx search`) matches word *parts*, so a
    search for a root word also finds it with Bangla suffixes attached (e.g.
    বাংলাদেশ finds বাংলাদেশের), and is case-insensitive for English.
@@ -111,6 +115,14 @@ uv run bytx search "student visa" --semantic
 # Ask questions across your library (or one video with --video)
 uv run bytx ask "এই ভিডিওতে কী বলা হয়েছে?"
 uv run bytx ask "What documents do I need for the visa?"
+
+# How far can a transcript be trusted?
+uv run bytx quality                    # every transcript, flagged ones first
+uv run bytx quality <video_id>         # gaps, low-confidence clips, why it was flagged
+uv run bytx compare <video_id>         # cross-check against YouTube's auto-captions
+
+# Rebuild the transcript folders after editing glossary.txt or the layout changed
+uv run bytx reexport --all
 
 # Retry anything that failed
 uv run bytx retry && uv run bytx run
@@ -246,6 +258,83 @@ handing the whole file to faster-whisper:
 `asr.vad_threshold`). `bytx bench` prints the clip/re-split counts too.
 Transcripts made before this change are not regenerated.
 
+### Trusting a transcript
+
+A Whisper transcript is good enough to find leads and not good enough to treat
+as a source. Numbers usually survive, but names and acronyms get garbled, a
+sentence can lose its meaning, and stretches of speech can silently go
+missing. bytx does not fix that; it records enough to tell you where to look.
+
+**What every transcript carries** (in `data/videos/<id>/` and in
+`yt-transcribed-files/<date>/<channel> - <title>/`):
+
+- `transcript.txt`: the raw ASR text, one clip per line, never modified.
+- `transcript.vtt` / `.srt` / `.json`: the same text with real start/end
+  times. Segments are clip-sized (up to 12 s, 15 s for English), so a claim
+  can be located in the video to within a few seconds. The `.json` also holds
+  each clip's `avg_logprob` and `no_speech_prob` (see below).
+- `metadata.json`: id, url, platform, title, channel, upload date, duration,
+  language, source (`asr` or `human_subs`), ASR model, when it was
+  transcribed, the glossary replacement count, and the quality assessment.
+  The upload date is what lets you judge whether a policy claim is current.
+
+**Quality flags** (`bytx quality`, a warning during `bytx run`, and the
+`quality` block in `metadata.json` and `INDEX.md`), computed from the stored
+segments and the video's duration:
+
+| Signal | Flag when | Usually means |
+|---|---|---|
+| words per minute | under 70 or over 220 | speech was skipped, or text was repeated/invented |
+| gaps | a stretch over 10 s with no text, including the start and end | dropped speech, or music |
+| low-confidence clips | `avg_logprob` under -1.0, or `no_speech_prob` over 0.6 | a garbled or hallucinated clip |
+
+`avg_logprob` is the model's mean token log-probability for a clip (closer to
+0 is surer), taken from faster-whisper. Only transcripts made since it was
+introduced have it; older ones show `-` and are judged on the first two
+signals only. Thresholds are under `[quality]` in `config.toml`. These are
+smoke alarms, not proof: a flagged transcript may be fine (a long song), and
+an unflagged one can still contain a wrong name.
+
+**The glossary** (`glossary.txt`) is a plain list of the names, acronyms and
+jargon your videos use, in one format:
+
+```
+IRCC                                   # a term to prime the decoder with
+TrustEd Ireland <= Trusted Ireland     # canonical <= known mis-hearing | another
+```
+
+It does two jobs. Its terms are passed to Whisper as its initial prompt
+(`asr.glossary_prompt_max_chars`), which biases decoding towards those
+spellings; this is on for English only (`asr.glossary_prompt_languages`)
+because priming can make the Bangla fine-tune echo its prompt. Try adding
+`"bn"` with `bytx bench --ref` first. And its `<=` variants are corrected in
+`transcript.clean.txt`, a separate copy: the raw text, the database and the
+search index keep exactly what the model produced. The correction is a plain
+find-and-replace (case-insensitive, whole-word for Latin text), so it can
+only substitute words you listed; no language model rewrites the text.
+After editing the glossary, `bytx reexport --all` refreshes existing transcripts
+(the decoder hints only affect new transcriptions).
+
+**`bytx compare <video_id>`** cross-checks a transcript against an independent
+one, YouTube's auto-generated captions for the same video (or your own file
+with `--against captions.vtt`). Two recognisers rarely fail the same way, so
+segments where they disagree are where a wrong name, number or sentence is
+most likely, and captioned speech missing from our transcript shows where
+speech was dropped. It writes `compare.md` next to the transcript. A
+disagreement is a spot to listen to, not a verdict; YouTube's Bangla captions
+in particular are weak, so this is most useful for English and mixed-language
+videos. It needs the video to be on YouTube with auto-captions in its
+language. Numbers are compared as digits, so "ten thousand" against "10,000"
+shows up as a difference.
+
+**Language is a decision, not a guess.** Each video is decoded with the one
+language it was queued with (`--lang`); Whisper's per-chunk language detection
+is never used, since it wrongly reads Bangla with English words as English or
+Hindi (see [Languages](#languages)). The language is recorded in
+`metadata.json`. Videos in Hindi, or that mix Hindi and English, are not
+supported: use `--lang en` and expect the Hindi parts to be garbled, which the
+flags above will often (not always) reveal.
+
 ### Known limitations of the transcripts
 
 These come from the ASR model, not the segmentation:
@@ -322,9 +411,12 @@ src/bytx/
   config.py       config.toml loader
   langs.py        supported languages: codes, names, normalization
   fetch.py        yt-dlp: URL expansion, metadata, audio download, subtitles
-  transcribe.py   faster-whisper wrapper (VAD, language detection, per-language model pool, fallback chain, anti-hallucination)
+  transcribe.py   faster-whisper wrapper (VAD, per-clip confidence, glossary priming, per-language model pool, fallback chain, anti-hallucination)
   store.py        SQLite schema + FTS5 (trigram) search
-  export.py       txt/srt/vtt/json writers
+  export.py       txt/srt/vtt/json writers, per-video metadata.json, INDEX.md
+  quality.py      words/min, coverage, gap and low-confidence flags for a transcript
+  glossary.py     glossary.txt: decoder priming terms and the cleaned-copy corrections
+  compare.py      cross-check a transcript against a second one (YouTube auto-captions)
   ledger.py       durable, git-tracked markdown record of transcribed video ids
   pipeline.py     staged, resumable runner (transcribe -> index -> summarize)
   llm.py          minimal Ollama HTTP client
@@ -336,7 +428,8 @@ scripts/
   convert_model.py   HF Whisper -> CTranslate2 conversion
 tests/               offline pytest suite (no GPU/network required)
 TRANSCRIBED_LEDGER.md   git-tracked list of transcribed video ids (see below)
-yt-transcribed-files/   git-tracked <date>/"<channel> - <title>" transcript folders
+glossary.txt            names/acronyms/jargon that prime the decoder and fix known mis-hearings
+yt-transcribed-files/   git-tracked <date>/"<channel> - <title>" transcript folders + INDEX.md
 ```
 
 ### Transcribed-video ledger and human-facing output
@@ -349,11 +442,16 @@ transcribed. Two things fix that:
   id, channel, title, url, language, date) written after every successful
   transcription. `bytx add` checks it alongside the DB, so a known video id
   is never silently re-queued.
-- **`yt-transcribed-files/<YYYY-MM-DD>/<channel> - <title>/transcript.txt`** —
-  a human-browsable, git-tracked copy of the plain-text transcript, filed
-  under the date it was transcribed and separate from the DB-linked
-  `data/videos/<id>/` export. Re-running a video keeps its original date
-  folder.
+- **`yt-transcribed-files/<YYYY-MM-DD>/<channel> - <title>/`** — a
+  human-browsable, git-tracked copy of the transcript (raw text, timestamps,
+  `metadata.json`, cleaned text), filed under the date it was transcribed and
+  separate from the DB-linked `data/videos/<id>/` export. Names are cut to 150
+  characters to stay under Windows' path limit. A hidden `.video_id` file in
+  each folder ties it to its video, so a re-run keeps its original date folder
+  and name even if the title changed, and two different videos with the same
+  channel and title get a ` (<video_id>)` suffix instead of sharing a folder.
+  `yt-transcribed-files/INDEX.md` (regenerated automatically) lists every
+  transcript with its id, language, length and quality flags.
 
 To force a video to be re-transcribed, remove its entry from
 `TRANSCRIBED_LEDGER.md` (and its row from `data/library.db`, if present).

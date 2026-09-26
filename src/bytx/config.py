@@ -60,6 +60,12 @@ class AsrConfig:
     # words the Bangla model writes for a sample of it are Bangla function
     # words (see langdetect.py).
     auto_english_below: float = 0.10
+    # Vocabulary file (see glossary.py); relative to the project root. None disables it.
+    glossary: Path | None = None
+    # Languages whose decoding is primed with the glossary's terms. Priming a
+    # fine-tuned model can make it echo the prompt, so Bangla is opt-in.
+    glossary_prompt_languages: tuple[str, ...] = (langs.ENGLISH,)
+    glossary_prompt_max_chars: int = 300
 
     def _model(self, key: str) -> AsrModelConfig:
         try:
@@ -91,6 +97,17 @@ class AsrConfig:
     def required_model_keys(self) -> list[str]:
         """Every model this config can route to, deduplicated, for setup/doctor."""
         return list(dict.fromkeys([self.model, *self.language_models.values()]))
+
+
+@dataclass(frozen=True)
+class QualityConfig:
+    """Thresholds for flagging a transcript as suspect (see quality.py)."""
+
+    min_wpm: float = 70.0  # fewer words per minute than this: speech was probably dropped
+    max_wpm: float = 220.0  # more than this: probably repeated or hallucinated text
+    max_gap_seconds: float = 10.0  # a longer stretch with no text (also at the start/end)
+    min_avg_logprob: float = -1.0  # a clip whose mean token log-probability is below this
+    max_no_speech_prob: float = 0.6  # a clip the model thinks may hold no speech
 
 
 @dataclass(frozen=True)
@@ -152,6 +169,7 @@ class Config:
     ollama: OllamaConfig
     rag: RagConfig
     summarize: SummarizeConfig
+    quality: QualityConfig = field(default_factory=QualityConfig)
 
     def ensure_dirs(self) -> None:
         self.paths.data_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +248,14 @@ def load_config(path: str | Path | None = None) -> Config:
             f"asr.default_language = {default_language!r} is not supported "
             f"(supported: {', '.join(langs.SUPPORTED)})"
         )
+    prompt_languages = tuple(asr_raw.get("glossary_prompt_languages", [langs.ENGLISH]))
+    for lang in prompt_languages:
+        if lang not in langs.SUPPORTED:
+            raise ValueError(
+                f"asr.glossary_prompt_languages has unsupported language {lang!r} "
+                f"(supported: {', '.join(langs.SUPPORTED)})"
+            )
+    glossary_raw = asr_raw.get("glossary", "glossary.txt")
     asr = AsrConfig(
         model=asr_raw.get("model", "tugstugi-medium-bn"),
         device=asr_raw.get("device", "auto"),
@@ -249,6 +275,9 @@ def load_config(path: str | Path | None = None) -> Config:
         language_models=language_models,
         default_language=default_language,
         auto_english_below=asr_raw.get("auto_english_below", 0.10),
+        glossary=_resolve(root, glossary_raw) if glossary_raw else None,
+        glossary_prompt_languages=prompt_languages,
+        glossary_prompt_max_chars=asr_raw.get("glossary_prompt_max_chars", 300),
     )
 
     fetch_raw = raw.get("fetch", {})
@@ -281,6 +310,16 @@ def load_config(path: str | Path | None = None) -> Config:
         language=summarize_raw.get("language", "auto"),
     )
 
+    quality_raw = raw.get("quality", {})
+    defaults = QualityConfig()
+    quality = QualityConfig(
+        min_wpm=quality_raw.get("min_wpm", defaults.min_wpm),
+        max_wpm=quality_raw.get("max_wpm", defaults.max_wpm),
+        max_gap_seconds=quality_raw.get("max_gap_seconds", defaults.max_gap_seconds),
+        min_avg_logprob=quality_raw.get("min_avg_logprob", defaults.min_avg_logprob),
+        max_no_speech_prob=quality_raw.get("max_no_speech_prob", defaults.max_no_speech_prob),
+    )
+
     return Config(
         root=root,
         paths=paths,
@@ -289,6 +328,7 @@ def load_config(path: str | Path | None = None) -> Config:
         ollama=ollama,
         rag=rag,
         summarize=summarize,
+        quality=quality,
     )
 
 
