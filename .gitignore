@@ -5,9 +5,16 @@ models/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 *.egg-info/
 .env
 tools/
 ollama-models/
 .agents/
 skills-lock.json
+
+# Your personal transcript library: a record of what you've transcribed.
+# Trackable if you want a git-backed personal archive; ignored by default
+# so a fork doesn't ship with someone else's transcribed video history.
+TRANSCRIBED_LEDGER.md
+yt-transcribed-files/

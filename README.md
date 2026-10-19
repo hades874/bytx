@@ -1,5 +1,9 @@
 # bytx
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](#requirements)
+
 A local, free/open-source tool to transcribe Bangla- and English-language
 YouTube and Facebook videos and build a searchable, askable library out of them. Each
 video has a language (Bangla unless you say `--lang en` or `--lang auto`)
@@ -22,16 +26,17 @@ summarization/Q&A run on your own [Ollama][ollama] install.
    plus a readable folder per video (`data/videos/<id>/`) with
    `transcript.txt` / `.srt` / `.vtt` / `.json`, `info.json`, and
    `summary.md`. A second, human-browsable copy of each transcript also
-   lands in the git-tracked `yt-transcribed-files/` folder (grouped in a
+   lands in the `yt-transcribed-files/` folder (grouped in a
    `YYYY-MM-DD` folder for the day it was transcribed, then one subfolder
    per video, named `<channel> - <title>`): the raw text, a timestamped `.vtt` and
    `.json` (with per-clip confidence), a `metadata.json` (title, channel,
    upload date, duration, model, quality flags), and a glossary-corrected
    `transcript.clean.txt` when the glossary changed anything. A generated
-   `INDEX.md` lists them all. Every completed video is also recorded in the
-   git-tracked `TRANSCRIBED_LEDGER.md` so a video is never silently
-   re-transcribed, even if the gitignored `data/` folder is deleted or the
-   repo is cloned fresh. See [Trusting a transcript](#trusting-a-transcript).
+   `INDEX.md` lists them all. Every completed video is also recorded in
+   `TRANSCRIBED_LEDGER.md` so a video is never silently re-transcribed, even
+   if `data/` is deleted. Both are gitignored by default (your transcript
+   library is yours, not shipped with this repo) but trackable if you want a
+   git-backed personal archive. See [Trusting a transcript](#trusting-a-transcript).
 3. **Search** — keyword search (`bytx search`) matches word *parts*, so a
    search for a root word also finds it with Bangla suffixes attached (e.g.
    বাংলাদেশ finds বাংলাদেশের), and is case-insensitive for English.
@@ -435,15 +440,16 @@ yt-transcribed-files/   git-tracked <date>/"<channel> - <title>" transcript fold
 ### Transcribed-video ledger and human-facing output
 
 `data/` (SQLite DB + per-id export folders) is gitignored, so on its own it
-can't tell a fresh clone, or a wiped `data/`, that a video has already been
-transcribed. Two things fix that:
+can't tell a wiped `data/` that a video has already been transcribed. Two
+things fix that, both gitignored by default (trackable if you want a
+git-backed personal archive of your own library — see `.gitignore`):
 
 - **`TRANSCRIBED_LEDGER.md`** — a plain, append-only markdown record (video
   id, channel, title, url, language, date) written after every successful
   transcription. `bytx add` checks it alongside the DB, so a known video id
   is never silently re-queued.
 - **`yt-transcribed-files/<YYYY-MM-DD>/<channel> - <title>/`** — a
-  human-browsable, git-tracked copy of the transcript (raw text, timestamps,
+  human-browsable copy of the transcript (raw text, timestamps,
   `metadata.json`, cleaned text), filed under the date it was transcribed and
   separate from the DB-linked `data/videos/<id>/` export. Names are cut to 150
   characters to stay under Windows' path limit. A hidden `.video_id` file in
@@ -471,3 +477,9 @@ mechanisms; you shouldn't need to think about this, but if you ever see
 uv run pytest              # full test suite (offline, no GPU/network needed)
 uv run ruff check .        # lint
 ```
+
+Contributions and issues are welcome — open a PR or an issue.
+
+## License
+
+[MIT](LICENSE)

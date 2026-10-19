@@ -19,6 +19,10 @@ uv run ruff check .              # lint (line length 110; tests exempt from E501
 
 Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings live in `config.toml`, loaded by `config.py`.
 
+## Transcribing videos
+
+When asked to transcribe new videos (e.g. those in `urls.txt`), follow `docs/SOP-video-transcription.md`. The two rules that matter most: always pass an explicit `--lang` to `bytx add` (never rely on `asr.default_language`; an English video queued as `bn` produces Bangla-script gibberish that no quality flag catches), and verify the transcript text yourself before reporting success (`failed=0` does not mean correct). To redo a video, use `scripts/redo_video.py`, and ask before deleting.
+
 ## Architecture
 
 **Pipeline** (`pipeline.py`): each video moves through a status ladder `queued -> transcribed -> indexed -> summarized` (or `failed`). Every stage re-queries its input status, so `bytx run` is resumable and idempotent. Stage 1 (faster-whisper on GPU) unloads its model before stages 2/3 (embeddings, summaries) use Ollama, so the two never share VRAM.
@@ -31,8 +35,8 @@ Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings live in `config.
 
 **Storage is three-layered:**
 - `data/library.db` (`store.py`): SQLite with a trigram FTS5 index, embedding chunks and summaries, plus schema migrations via `_migrate` (existing rows upgraded on open). `data/videos/<id>/` holds DB-linked exports. Both gitignored.
-- `yt-transcribed-files/<date>/<channel> - <title>/` (`export.py`): git-tracked human-readable copy, with a hidden `.video_id` file tying folder to video, and a generated `INDEX.md`.
-- `TRANSCRIBED_LEDGER.md` (`ledger.py`): git-tracked append-only record of transcribed ids, checked by `bytx add` so videos are never re-transcribed after `data/` is wiped. To force a re-transcribe, remove the ledger entry and the DB row.
+- `yt-transcribed-files/<date>/<channel> - <title>/` (`export.py`): human-readable copy, with a hidden `.video_id` file tying folder to video, and a generated `INDEX.md`. Gitignored by default (trackable if you want a personal git-backed archive).
+- `TRANSCRIBED_LEDGER.md` (`ledger.py`): append-only record of transcribed ids, checked by `bytx add` so videos are never re-transcribed after `data/` is wiped. Gitignored by default. To force a re-transcribe, remove the ledger entry and the DB row.
 
 **Platforms** (`platforms.py`, `fetch.py`): YouTube ids are stored bare (11 chars); Facebook ids are `fb_<number>`. Everything downstream (paths, ledger, CLI args) uses these ids. Facebook has no uploader subtitles and no playlist extractor in yt-dlp.
 
