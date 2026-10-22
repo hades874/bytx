@@ -11,7 +11,7 @@ Distribution roadmap and settled decisions: `docs/PRD-distribution.md`. Read it 
 Python 3.12, managed with `uv`. On this machine all tools/caches are project-local: dot-source `. .\env.ps1` in PowerShell first (puts `tools/uv`, ffmpeg and deno on PATH and redirects uv/HF/Ollama caches).
 
 ```
-uv sync                          # add --extra convert for one-time model conversion (torch)
+uv sync --extra gpu              # CUDA libs (plain `uv sync` removes them); --extra convert adds torch
 uv run bytx setup                # download/convert ASR models, pull Ollama models
 uv run bytx doctor               # verify GPU/ffmpeg/deno/Ollama wiring
 uv run pytest                    # offline suite, no GPU/network (testpaths = tests)

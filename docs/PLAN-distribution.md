@@ -212,7 +212,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** the dry run leaves the DB, folders and ledger unchanged. `--yes` removes all four and rebuilds `INDEX.md`. `add_targets` re-queues the id afterwards. An unknown id exits 1. `..` and `a/b` are rejected and nothing is deleted.
 
 ### T5a. Dependencies + `cuda_dll` fix
-- [ ] Done · **Needs:** nothing (do it after T4 to keep diffs apart) · **PRD:** R1.5
+- [x] Done · **Needs:** nothing (do it after T4 to keep diffs apart) · **PRD:** R1.5
 
 **Files:** `pyproject.toml`, `uv.lock`, `src/bytx/cuda_dll.py`, new test in `tests/test_transcribe.py` or `tests/test_cuda_dll.py`.
 

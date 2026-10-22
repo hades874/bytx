@@ -1,5 +1,5 @@
 """Fixes a known Windows issue where pip-installed NVIDIA CUDA/cuDNN wheels
-(nvidia-cublas-cu12, nvidia-cudnn-cu12) drop their DLLs under
+(nvidia-cublas-cu12, nvidia-cudnn-cu12, from the `gpu` extra) drop their DLLs under
 site-packages/nvidia/<pkg>/bin, a directory Windows never adds to the DLL
 search path on its own. CTranslate2 (used by faster-whisper) then silently
 falls back to CPU instead of raising an error.
@@ -38,7 +38,10 @@ def ensure_cuda_dll_paths() -> list[str]:
 
     added: list[str] = []
     for pkg in ("nvidia.cublas", "nvidia.cudnn", "nvidia.cuda_runtime", "nvidia.cuda_nvrtc"):
-        spec = importlib.util.find_spec(pkg)
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except ModuleNotFoundError:  # no `nvidia` package at all: an install without the gpu extra
+            continue
         if spec is None or not spec.submodule_search_locations:
             continue
         for location in spec.submodule_search_locations:
