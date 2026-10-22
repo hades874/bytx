@@ -74,9 +74,10 @@ class _FakeWhisperModel:
             enc.ids = list(range(len(text.split())))
             return enc
 
-    def __init__(self, model_dir, device, compute_type):
+    def __init__(self, model_dir, device, compute_type, cpu_threads=0):
         if (device, compute_type) in _FakeWhisperModel.fail_on_construct:
             raise RuntimeError(f"cannot construct on {device}/{compute_type}")
+        self.cpu_threads = cpu_threads
         self.device = device
         self.compute_type = compute_type
         self.hf_tokenizer = _FakeWhisperModel._Tokenizer()
@@ -149,6 +150,27 @@ def test_falls_back_to_int8_float16_when_float16_construction_fails(tmp_path):
     t = make_transcriber(tmp_path)
     assert t.device == "cuda"
     assert t.compute_type == "int8_float16"
+
+
+def test_cpu_uses_one_thread_per_physical_core(tmp_path, monkeypatch):
+    monkeypatch.setattr(transcribe.psutil, "cpu_count", lambda logical=True: 12 if logical else 6)
+    t = make_transcriber(tmp_path, device="cpu")
+    assert t.device == "cpu"
+    assert t._model.cpu_threads == 6  # CTranslate2's default is 4
+
+
+def test_cpu_threads_fall_back_to_logical_cores_when_physical_are_unknown(tmp_path, monkeypatch):
+    monkeypatch.setattr(transcribe.psutil, "cpu_count", lambda logical=True: None)
+    monkeypatch.setattr(transcribe.os, "cpu_count", lambda: 8)
+    t = make_transcriber(tmp_path, device="cpu")
+    _ = t.device
+    assert t._model.cpu_threads == 8
+
+
+def test_cuda_keeps_the_default_cpu_threads(tmp_path):
+    t = make_transcriber(tmp_path)
+    assert t.device == "cuda"
+    assert t._model.cpu_threads == 0
 
 
 def test_falls_back_when_float16_construct_ok_but_smoke_test_transcribe_fails(tmp_path):

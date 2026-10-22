@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import psutil
 from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
 from faster_whisper.vad import VadOptions, get_speech_timestamps
@@ -202,6 +204,10 @@ class ModelLoadError(RuntimeError):
     pass
 
 
+def _physical_cores() -> int:
+    return psutil.cpu_count(logical=False) or os.cpu_count() or 4
+
+
 class Transcriber:
     """Lazily loads the model on first use; call `unload()` between the ASR
     stage and later GPU-using stages (e.g. Ollama) to free VRAM.
@@ -248,8 +254,12 @@ class Transcriber:
             else:
                 chain = list(_FALLBACK_CHAIN.get(device, [requested]))
             for compute_type in chain:
+                # CTranslate2 uses 4 CPU threads unless told; one per physical core is faster.
+                threads = {"cpu_threads": _physical_cores()} if device == "cpu" else {}
                 try:
-                    model = WhisperModel(str(self.model_dir), device=device, compute_type=compute_type)
+                    model = WhisperModel(
+                        str(self.model_dir), device=device, compute_type=compute_type, **threads
+                    )
                     self._smoke_test(model)
                 except Exception as exc:  # noqa: BLE001 - intentionally broad; we try the next option
                     errors.append(f"{device}/{compute_type}: {exc}")

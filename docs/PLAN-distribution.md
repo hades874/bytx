@@ -226,7 +226,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** with `sys.platform` patched to `win32` and `find_spec` raising `ModuleNotFoundError`, the function returns `[]`.
 
 ### T5b. CPU threads = physical cores
-- [ ] Done · **Needs:** T5a · **PRD:** R1.5
+- [x] Done · **Needs:** T5a · **PRD:** R1.5
 
 **Files:** `src/bytx/transcribe.py` (`Transcriber._load`, line 253), `tests/test_transcribe.py`.
 
