@@ -29,7 +29,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export, fetch, langdetect, langs, ledger, platforms, quality, rag, store, summarize
+from . import export, fetch, langdetect, langs, ledger, models, platforms, quality, rag, store, summarize
 from . import glossary as glossary_mod
 from .config import Config
 from .llm import OllamaClient
@@ -265,6 +265,9 @@ def _run_stage(
 
 
 def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | None = None) -> RunSummary:
+    """Processes the queue. Raises models.ModelsMissing, before touching any
+    video, when there is something to transcribe but `bytx setup` hasn't
+    downloaded the ASR models: videos would otherwise all end up `failed`."""
     result = RunSummary()
     should_summarize = cfg.summarize.enabled if summarize_enabled is None else summarize_enabled
 
@@ -272,6 +275,11 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
     if limit is not None:
         queued = queued[:limit]
     if queued:
+        absent = models.missing(cfg)
+        if absent:
+            raise models.ModelsMissing(
+                f"ASR model(s) not downloaded yet: {', '.join(absent)}. Run `bytx setup`."
+            )
         pool = TranscriberPool(cfg)
         # Audio downloaded while detecting a language, kept for the transcription.
         detected_audio: dict[str, Path] = {}

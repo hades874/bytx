@@ -149,7 +149,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** the existing pool, bench and doctor tests, now monkeypatching `models.local_path`.
 
 ### T2c. `run` before `setup` keeps videos queued
-- [ ] Done · **Needs:** T2b · **PRD:** R1.3
+- [x] Done · **Needs:** T2b · **PRD:** R1.3
 
 **Files:** `src/bytx/pipeline.py` (`run`, line 267), `src/bytx/cli.py` (`_do_run`), `tests/test_pipeline.py`, `tests/test_cli.py`.
 

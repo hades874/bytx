@@ -511,3 +511,11 @@ def test_the_first_command_creates_the_data_folder(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "No videos in the library yet" in result.output
     assert (home / "data" / "library.db").is_file()
+
+
+def test_run_before_setup_exits_with_a_hint_and_keeps_the_queue(config_path, tmp_path, one_url):
+    runner.invoke(cli.app, ["add", URL, "--lang", "bn", "--config", config_path])
+    result = runner.invoke(cli.app, ["run", "--config", config_path])  # nothing downloaded in tmp
+    assert result.exit_code == 1
+    assert "Run `bytx setup`" in result.output
+    assert db(tmp_path).execute("SELECT status FROM videos").fetchone()[0] == "queued"

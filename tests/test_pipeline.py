@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from bytx import fetch, ledger, pipeline, platforms, store
+from bytx import fetch, ledger, models, pipeline, platforms, store
 from bytx.config import (
     AsrConfig,
     AsrModelConfig,
@@ -156,6 +156,7 @@ def _reset_fakes(monkeypatch):
     _SAMPLE_FAILURES.clear()
     monkeypatch.setattr(pipeline, "TranscriberPool", FakePool)
     monkeypatch.setattr(pipeline, "OllamaClient", FakeOllamaClient)
+    monkeypatch.setattr(pipeline.models, "missing", lambda cfg: [])  # `bytx setup` has run
     yield
 
 
@@ -440,6 +441,27 @@ def test_run_happy_path_all_stages(conn, tmp_path, monkeypatch):
     for v in vids:
         assert store.get_video(conn, v).status == "summarized"
     assert FakePool.instances[0].unloaded is True
+
+
+def test_run_before_setup_stops_and_leaves_every_video_queued(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    downloads = patch_fetch(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline.models, "missing", lambda cfg: ["m", "e"])
+    vids = ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    for v in vids:
+        store.upsert_video(conn, store.Video(id=v, url=video_url(v), status="queued"))
+
+    with pytest.raises(models.ModelsMissing, match="Run `bytx setup`"):
+        pipeline.run(conn, cfg)
+
+    assert [store.get_video(conn, v).status for v in vids] == ["queued", "queued"]
+    assert downloads == [] and FakePool.instances == []
+
+
+def test_run_with_an_empty_queue_does_not_need_the_asr_models(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(pipeline.models, "missing", lambda cfg: ["m"])
+    assert pipeline.run(conn, cfg).failed == 0  # indexing/summaries of old videos can still run
 
 
 def test_run_continues_after_one_video_fails(conn, tmp_path, monkeypatch):

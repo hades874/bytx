@@ -240,7 +240,11 @@ def run(
 
 def _do_run(conn, cfg: Config, limit: int | None, summarize_enabled: bool | None = None) -> None:
     ensure_cuda_dll_paths()
-    result = pipeline.run(conn, cfg, limit=limit, summarize_enabled=summarize_enabled)
+    try:
+        result = pipeline.run(conn, cfg, limit=limit, summarize_enabled=summarize_enabled)
+    except models.ModelsMissing as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
     detected = f"language-detected={result.detected} " if result.detected else ""
     console.print(
         f"[bold]Done.[/bold] {detected}transcribed={result.transcribed} indexed={result.indexed} "
