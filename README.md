@@ -13,6 +13,8 @@ on your own [Ollama][ollama] install.
 [fw]: https://github.com/SYSTRAN/faster-whisper
 [ollama]: https://ollama.com
 
+**বাংলায় পড়ুন:** [দ্রুত শুরু (Bangla quick-start)](docs/README.bn.md)
+
 ## Features
 
 - **Fetch** a single video, a playlist, a whole channel, or a text file of

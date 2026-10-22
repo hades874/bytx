@@ -118,3 +118,38 @@ def test_missing_lists_only_the_configured_models_that_are_absent(tmp_path, hf_c
         encoding="utf-8",
     )
     assert models.missing(load_config(tmp_path / "config.toml")) == ["multi"]
+
+
+# --- download_size ----------------------------------------------------------------------
+
+class _File:
+    def __init__(self, size):
+        self.size = size
+
+
+class _Info:
+    siblings = [_File(1_527_906_453), _File(339), _File(None)]
+
+
+def test_download_size_adds_up_the_repo_files(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub.HfApi, "model_info",
+        lambda self, repo, files_metadata=False: calls.append((repo, files_metadata)) or _Info(),
+    )
+    assert models.download_size(model_cfg("org/m")) == 1_527_906_792
+    assert calls == [("org/m", True)]
+
+
+def test_download_size_is_unknown_offline(monkeypatch):
+    def offline(self, repo, files_metadata=False):
+        raise OSError("no network")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", offline)
+    assert models.download_size(model_cfg("org/m")) is None
+
+
+def test_download_size_never_asks_the_hub_about_local_or_unconvertible_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", lambda *a, **k: pytest.fail("asked the Hub"))
+    assert models.download_size(model_cfg(ct2_folder(tmp_path / "local"))) is None
+    assert models.download_size(model_cfg("org/raw", already_ct2=False)) is None

@@ -72,6 +72,20 @@ def download(model_cfg: AsrModelConfig, force: bool = False) -> Path:
     return Path(snapshot_download(model_cfg.source, force_download=force))
 
 
+def download_size(model_cfg: AsrModelConfig) -> int | None:
+    """Bytes `download` would fetch from Hugging Face; None for a local folder,
+    a model setup can't download, or when the Hub can't be asked (offline)."""
+    if _local_folder(model_cfg) is not None or not model_cfg.already_ct2:
+        return None
+    from huggingface_hub import HfApi
+
+    try:
+        info = HfApi().model_info(model_cfg.source, files_metadata=True)
+    except Exception:  # noqa: BLE001 - a size is a nicety; the download reports real errors
+        return None
+    return sum(f.size or 0 for f in info.siblings or [])
+
+
 def missing(cfg: Config) -> list[str]:
     """Keys of the models `bytx setup` would fetch that are not on this machine."""
     absent = []

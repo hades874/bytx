@@ -230,6 +230,13 @@ def setup(config: str | None = _config_option, force: bool = False) -> None:
         console.print(f"[red]Config error:[/red] {escape(str(exc))}")
         raise typer.Exit(1) from exc
 
+    to_fetch = model_keys if force else models.missing(cfg)
+    sizes = {key: models.download_size(cfg.asr.models[key]) for key in to_fetch}
+    if any(sizes.values()):
+        listed = ", ".join(f"{key} ({size / 1e9:.1f} GB)" for key, size in sizes.items() if size)
+        total = sum(size for size in sizes.values() if size)
+        console.print(f"Downloading {total / 1e9:.1f} GB of speech models: {listed}")
+
     for key in model_keys:
         console.print(f"[bold]Setting up ASR model[/bold]: {key}")
         try:

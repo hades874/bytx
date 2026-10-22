@@ -309,7 +309,7 @@ Add `[project.urls]`, `classifiers` and `keywords` to pyproject.
 **Done when:** `bytx setup` on a fresh install downloads both models with no `convert` extra.
 
 ### T9. Release 1 P1 items
-- [ ] Done · **Needs:** T8 · **PRD:** R1 P1
+- [x] Done · *Done before T8: the size lookup works for any Hugging Face CTranslate2 source. Checked live: 1.62 GB for the English model. The Bangla text needs a review by a native speaker.* · **Needs:** T8 · **PRD:** R1 P1
 
 **Do:**
 - Before downloading, `setup` prints each model's size, using `HfApi().model_info(source, files_metadata=True)` and summing the sibling sizes. Skip models already present. Mock this in tests.

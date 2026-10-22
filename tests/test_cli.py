@@ -25,6 +25,12 @@ already_ct2 = true
 URL = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
 
 
+@pytest.fixture(autouse=True)
+def _no_hub_size_lookups(monkeypatch):
+    """`bytx setup` asks Hugging Face for model sizes; tests stay offline."""
+    monkeypatch.setattr(cli.models, "download_size", lambda model_cfg: None)
+
+
 @pytest.fixture()
 def config_path(tmp_path):
     path = tmp_path / "config.toml"
@@ -212,6 +218,18 @@ def test_setup_downloads_every_configured_model_then_pulls_ollama_models(config_
     assert downloaded == ["bn-model", "multi"]
     pulled = [c[2] for c in calls if c[:2] == ["ollama", "pull"]]
     assert pulled == ["bge-m3", "gemma3:4b"]
+
+
+def test_setup_says_how_much_it_will_download_first(config_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.models, "missing", lambda cfg: ["multi"])  # bn-model is already here
+    monkeypatch.setattr(cli.models, "download_size", lambda m: 1_617_884_929)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: tmp_path)
+
+    output = " ".join(runner.invoke(cli.app, ["setup", "--config", config_path]).output.split())
+
+    assert "Downloading 1.6 GB of speech models: multi (1.6 GB)" in output
+    assert output.index("Downloading") < output.index("Setting up ASR model")
 
 
 def test_setup_stops_when_a_model_fails_to_download(config_path, monkeypatch):
