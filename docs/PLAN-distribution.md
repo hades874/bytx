@@ -290,7 +290,7 @@ Add `[project.urls]`, `classifiers` and `keywords` to pyproject.
 ## Release 1: maintainer-gated
 
 ### T8. Publish the Bangla model on Hugging Face
-- [ ] Done · **Needs:** T2a, plus the maintainer's Hugging Face organisation · **PRD:** R1.3
+- [ ] Done · *Model card written (`docs/hf/tugstugi-medium-bn-ct2.md`) and the upload commands checked against `hf` 1.32. Waiting on the maintainer: create the `bytx` organisation, then run the three commands below. After that: switch `defaults.toml` and add the test.* · **Needs:** T2a, plus the maintainer's Hugging Face organisation · **PRD:** R1.3
 
 **Do (engineering):**
 - Write `docs/hf/tugstugi-medium-bn-ct2.md`: model-card front matter (`license: apache-2.0`, `language: bn`, `library_name: ctranslate2`, tags `faster-whisper` and `whisper`, `base_model: bengaliAI/tugstugi_bengaliai-asr_whisper-medium`), credit to bengaliAI, float16 CTranslate2, the conversion command, and how bytx uses it.
