@@ -1,5 +1,8 @@
 """`bytx bench`: compares ASR models on a real clip -- speed (RTF) and,
 given a reference transcript, WER/CER via jiwer.
+
+`--clip` cuts the audio with ffmpeg, which must be on PATH: the only part of
+bytx that needs it (transcription decodes audio with PyAV).
 """
 
 from __future__ import annotations

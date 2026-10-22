@@ -235,7 +235,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** monkeypatch `WhisperModel` to record its kwargs. CPU gets the physical-core count; CUDA gets no `cpu_threads`.
 
 ### T5c. `doctor` and `bench` for an installed `bytx`
-- [ ] Done · **Needs:** S0, T3b, T5a · **PRD:** R1.5
+- [x] Done · **Needs:** S0, T3b, T5a · **PRD:** R1.5
 
 **Files:** `src/bytx/cli.py` (`doctor`), `src/bytx/bench.py`, `src/bytx/fetch.py` (only if S0 says so), `tests/test_cli.py`.
 

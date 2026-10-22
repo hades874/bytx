@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import logging
+import shutil
 import subprocess
+import sysconfig
 from pathlib import Path
 
 import typer
@@ -14,7 +17,7 @@ from rich.table import Table
 
 from . import compare as compare_module
 from . import export, fetch, langs, models, pipeline, platforms, quality, rag, store
-from .config import Config, load_config
+from .config import DEFAULT_CONFIG_FILENAME, Config, load_config
 from .cuda_dll import ensure_cuda_dll_paths
 from .llm import OllamaClient, OllamaError
 from .textio import configure_utf8_io
@@ -98,29 +101,62 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+def _deno_path() -> str | None:
+    """Where yt-dlp finds Deno (its JS runtime for YouTube): the Python
+    environment's scripts folder, where yt-dlp[deno] puts it, else PATH."""
+    bundled = Path(sysconfig.get_path("scripts")) / ("deno" + (sysconfig.get_config_var("EXE") or ""))
+    return str(bundled) if bundled.is_file() else shutil.which("deno")
+
+
+def _gpu_extra_installed() -> bool:
+    try:
+        return importlib.util.find_spec("nvidia.cublas") is not None
+    except ModuleNotFoundError:  # no `nvidia` package at all
+        return False
+
+
+def _nvidia_gpu() -> str | None:
+    """The first NVIDIA GPU nvidia-smi lists, if any."""
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        proc = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    gpus = [line for line in proc.stdout.splitlines() if line.startswith("GPU ")]
+    return gpus[0] if proc.returncode == 0 and gpus else None
+
+
 @app.command()
 def doctor(config: str | None = _config_option) -> None:
-    """Check that ffmpeg, yt-dlp, the ASR model, and Ollama are ready."""
+    """Check that downloads, the ASR models, the GPU and (optionally) Ollama are ready."""
     cfg = _load(config)
     ok = True
 
-    import shutil
+    settings = Path(config) if config else cfg.root / DEFAULT_CONFIG_FILENAME
+    console.print(f"Data folder: {cfg.root}")
+    note = "" if settings.is_file() else " (not created: using the defaults)"
+    console.print(f"Settings:    {settings}{note}")
 
-    # deno is the JS runtime yt-dlp needs for YouTube only; Facebook works without it.
-    for tool, note in (("ffmpeg", ""), ("deno", " (needed for YouTube; Facebook works without it)")):
-        path = shutil.which(tool)
-        if path:
-            console.print(f"[green]OK[/green]  {tool}: {path}")
-        else:
-            console.print(f"[red]MISSING[/red]  {tool} not found on PATH{note}")
-            ok = False
+    from yt_dlp.version import __version__ as yt_dlp_version
 
-    try:
-        proc = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=15)
-        console.print(f"[green]OK[/green]  yt-dlp: {proc.stdout.strip()}")
-    except Exception as exc:
-        console.print(f"[red]MISSING[/red]  yt-dlp: {exc}")
+    console.print(f"[green]OK[/green]  yt-dlp: {yt_dlp_version}")
+    deno = _deno_path()
+    if deno:
+        console.print(f"[green]OK[/green]  deno: {deno}")
+    else:
+        console.print(
+            "[red]MISSING[/red]  deno, which YouTube downloads need (Facebook works without it). "
+            "Reinstall bytx: it ships Deno."
+        )
         ok = False
+
+    gpu_extra = _gpu_extra_installed()
+    if not gpu_extra and (gpu := _nvidia_gpu()):
+        console.print(
+            f"[yellow]TIP[/yellow]  {escape(gpu)} found, but this bytx runs on the CPU. For much faster "
+            + escape('transcription install the GPU version: uv tool install --reinstall "bytx[gpu]"')
+        )
 
     from .transcribe import ModelLoadError, Transcriber
 
@@ -145,7 +181,9 @@ def doctor(config: str | None = _config_option) -> None:
             console.print(
                 f"[green]OK[/green]  ASR '{key}' loads on device={device} compute_type={compute_type}"
             )
-            if device != "cuda" or compute_type != cfg.asr.compute_type:
+            # Without the gpu extra the CPU is expected, not a fallback.
+            wanted = ("cuda", cfg.asr.compute_type)
+            if gpu_extra and cfg.asr.device != "cpu" and (device, compute_type) != wanted:
                 console.print(
                     f"  [yellow]note:[/yellow] fell back from cuda/{cfg.asr.compute_type} "
                     f"(see logs with -v for why)"
@@ -743,7 +781,9 @@ def bench(
     models: str | None = typer.Option(
         None, help="Comma-separated model keys to compare (default: config's model)"
     ),
-    clip: str | None = typer.Option(None, help="mm:ss-mm:ss range to clip before transcribing"),
+    clip: str | None = typer.Option(
+        None, help="mm:ss-mm:ss range to clip before transcribing (needs ffmpeg on PATH)"
+    ),
     ref: str | None = typer.Option(None, help="Reference transcript file for WER/CER scoring"),
     lang: str | None = typer.Option(
         None, "--lang",
@@ -755,6 +795,9 @@ def bench(
     from . import bench as bench_module
 
     language = _parse_lang(lang)
+    if clip and shutil.which("ffmpeg") is None:  # the only part of bytx that needs ffmpeg
+        console.print("[red]--clip needs ffmpeg on PATH[/red] (https://ffmpeg.org/download.html).")
+        raise typer.Exit(1)
     cfg = _load(config)
     model_keys = models.split(",") if models else [cfg.asr.model]
     bench_module.run_bench(

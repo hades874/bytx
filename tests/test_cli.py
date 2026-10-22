@@ -316,14 +316,55 @@ def test_list_platform_filter_ignores_case(config_path, tmp_path, flag):
     assert "fb_123456789012345" in result.output and "aaaaaaaaaaa" not in result.output
 
 
-def test_doctor_says_deno_is_only_needed_for_youtube(config_path, monkeypatch):
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda tool: None)
+def test_doctor_reports_a_missing_deno_and_never_checks_ffmpeg(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli, "_deno_path", lambda: None)
     result = runner.invoke(cli.app, ["doctor", "--config", config_path])
-    assert "deno not found on PATH (needed for YouTube; Facebook works without it)" in result.output
-    assert "ffmpeg not found on PATH" in result.output
-    assert "ffmpeg not found on PATH (needed" not in result.output  # the note is deno's alone
+    assert result.exit_code == 1
+    assert "which YouTube downloads need" in result.output and "Facebook works without it" in result.output
+    assert "ffmpeg" not in result.output
+
+
+def test_doctor_finds_the_deno_that_ships_with_bytx():
+    assert cli._deno_path() is not None  # yt-dlp[deno] installs it next to python
+
+
+class _NvidiaSmi:
+    returncode = 0
+    stdout = "GPU 0: NVIDIA GeForce RTX 4070 (UUID: GPU-x)\n"
+
+
+def test_doctor_suggests_the_gpu_version_for_an_unused_nvidia_gpu(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli, "_gpu_extra_installed", lambda: False)
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/bin/{tool}")
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
+    output = " ".join(runner.invoke(cli.app, ["doctor", "--config", config_path]).output.split())
+    assert "RTX 4070" in output and 'uv tool install --reinstall "bytx[gpu]"' in output
+
+
+def test_doctor_gives_no_gpu_tip_when_the_gpu_version_is_installed(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli, "_gpu_extra_installed", lambda: True)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
+    result = runner.invoke(cli.app, ["doctor", "--config", config_path])
+    assert "bytx[gpu]" not in result.output
+
+
+def test_doctor_shows_the_data_folder_and_whether_settings_exist(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    with_file = runner.invoke(cli.app, ["doctor", "--config", config_path]).output
+    defaults = runner.invoke(cli.app, ["doctor"]).output  # BYTX_HOME has no config.toml
+    assert "Data folder:" in with_file and "using the defaults" not in with_file
+    assert "using the defaults" in defaults
+
+
+def test_bench_clip_without_ffmpeg_stops_before_downloading(config_path, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(fetch, "download_audio", lambda *a: pytest.fail("should not download"))
+    result = runner.invoke(cli.app, ["bench", URL, "--clip", "00:00-00:10", "--config", config_path])
+    assert result.exit_code == 1
+    assert "needs ffmpeg" in result.output
 
 
 # --- quality / reexport / compare ----------------------------------------------------------
