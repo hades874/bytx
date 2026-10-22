@@ -519,3 +519,11 @@ def test_run_before_setup_exits_with_a_hint_and_keeps_the_queue(config_path, tmp
     assert result.exit_code == 1
     assert "Run `bytx setup`" in result.output
     assert db(tmp_path).execute("SELECT status FROM videos").fetchone()[0] == "queued"
+
+
+def test_run_prints_why_it_stopped_and_still_succeeds(config_path, monkeypatch):
+    stopped = cli.pipeline.RunSummary(transcribed=1, stopped="Ollama (optional) isn't running")
+    monkeypatch.setattr(cli.pipeline, "run", lambda *a, **k: stopped)
+    result = runner.invoke(cli.app, ["run", "--config", config_path])
+    assert result.exit_code == 0
+    assert "Ollama (optional) isn't running" in result.output

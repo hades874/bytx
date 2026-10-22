@@ -250,6 +250,8 @@ def _do_run(conn, cfg: Config, limit: int | None, summarize_enabled: bool | None
         f"[bold]Done.[/bold] {detected}transcribed={result.transcribed} indexed={result.indexed} "
         f"summarized={result.summarized} failed={result.failed}"
     )
+    if result.stopped:
+        console.print(f"[yellow]{escape(result.stopped)}[/yellow]")
     if result.failed:
         console.print(
             "[yellow]Some videos failed. Run `bytx status` for details, "

@@ -32,7 +32,7 @@ from pathlib import Path
 from . import export, fetch, langdetect, langs, ledger, models, platforms, quality, rag, store, summarize
 from . import glossary as glossary_mod
 from .config import Config
-from .llm import OllamaClient
+from .llm import OllamaClient, OllamaError
 from .transcribe import TranscriberPool, TranscribeStats
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,8 @@ class RunSummary:
     indexed: int = 0
     summarized: int = 0
     failed: int = 0
+    # Why the run stopped before indexing/summarizing (Ollama missing), if it did.
+    stopped: str | None = None
 
 
 AUTO = "auto"  # add_targets(language=AUTO): decide each video's language at run time
@@ -309,25 +311,44 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
             pool.unload()
 
     to_index = store.list_videos(conn, status="transcribed")
-    if to_index:
-        with OllamaClient(cfg.ollama) as client:
+    if not to_index and not (should_summarize and store.list_videos(conn, status="indexed")):
+        return result
+    # Ollama is optional: without it, transcripts stay `transcribed` (not failed)
+    # and a later run picks them up.
+    with OllamaClient(cfg.ollama) as client:
+        result.stopped = _ollama_problem(client, cfg, should_summarize)
+        if result.stopped:
+            return result
+        _run_stage(
+            conn, to_index, "index",
+            lambda v: index_one(conn, cfg, client, v),
+            result, "indexed",
+        )
+        if should_summarize:
             _run_stage(
-                conn, to_index, "index",
-                lambda v: index_one(conn, cfg, client, v),
-                result, "indexed",
+                conn, store.list_videos(conn, status="indexed"), "summarize",
+                lambda v: summarize_one(conn, cfg, client, v),
+                result, "summarized",
             )
 
-    if should_summarize:
-        to_summarize = store.list_videos(conn, status="indexed")
-        if to_summarize:
-            with OllamaClient(cfg.ollama) as client:
-                _run_stage(
-                    conn, to_summarize, "summarize",
-                    lambda v: summarize_one(conn, cfg, client, v),
-                    result, "summarized",
-                )
-
     return result
+
+
+def _ollama_problem(client: OllamaClient, cfg: Config, summarize: bool) -> str | None:
+    """Why indexing/summarizing can't run now, or None if it can."""
+    if not client.is_reachable():
+        return (
+            f"Ollama (optional) isn't running at {cfg.ollama.host}: transcripts are saved, but search "
+            "by meaning, Q&A and summaries wait until you start it and run `bytx run` again."
+        )
+    needed = [cfg.ollama.embed_model] + ([cfg.ollama.chat_model] if summarize else [])
+    try:
+        absent = [m for m in needed if not client.has_model(m)]
+    except OllamaError as exc:
+        return str(exc)
+    if absent:
+        return f"Ollama model(s) not pulled yet: {', '.join(absent)}. Run `bytx setup`, then `bytx run`."
+    return None
 
 
 def reexport(conn, cfg: Config, video_ids: list[str] | None = None) -> list[str]:

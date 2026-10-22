@@ -126,6 +126,8 @@ class FakeOllamaClient:
     """Replaces bytx.pipeline.OllamaClient as a context manager."""
 
     instances: list[FakeOllamaClient] = []
+    reachable = True
+    pulled: set[str] | None = None  # None: every model is pulled
 
     def __init__(self, ollama_cfg):
         self.cfg = ollama_cfg
@@ -138,6 +140,12 @@ class FakeOllamaClient:
     def __exit__(self, *a):
         self.closed = True
 
+    def is_reachable(self):
+        return FakeOllamaClient.reachable
+
+    def has_model(self, model):
+        return FakeOllamaClient.pulled is None or model in FakeOllamaClient.pulled
+
     def embed(self, texts, model=None):
         return [[1.0, 0.0, 0.0] for _ in texts]
 
@@ -149,6 +157,8 @@ class FakeOllamaClient:
 def _reset_fakes(monkeypatch):
     FakePool.instances = []
     FakeOllamaClient.instances = []
+    FakeOllamaClient.reachable = True
+    FakeOllamaClient.pulled = None
     _TRANSCRIBE_RESULTS.clear()
     _TRANSCRIBE_FAILURES.clear()
     _TRANSCRIBE_STATS.clear()
@@ -462,6 +472,53 @@ def test_run_with_an_empty_queue_does_not_need_the_asr_models(conn, tmp_path, mo
     cfg = make_config(tmp_path)
     monkeypatch.setattr(pipeline.models, "missing", lambda cfg: ["m"])
     assert pipeline.run(conn, cfg).failed == 0  # indexing/summaries of old videos can still run
+
+
+def test_run_without_ollama_stops_after_transcription_without_failing(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="queued"))
+    FakeOllamaClient.reachable = False
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.transcribed, result.indexed, result.failed) == (1, 0, 0)
+    assert "Ollama (optional) isn't running" in result.stopped
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "transcribed"
+
+    FakeOllamaClient.reachable = True  # the user starts Ollama and runs again
+    again = pipeline.run(conn, cfg)
+
+    assert (again.indexed, again.summarized, again.stopped) == (1, 1, None)
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "summarized"
+
+
+def test_run_with_ollama_models_not_pulled_says_run_setup(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="transcribed"))
+    store.replace_segments(conn, "aaaaaaaaaaa", [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="t")])
+    FakeOllamaClient.pulled = {"gemma3:4b"}  # no embedding model
+
+    result = pipeline.run(conn, cfg)
+
+    assert "bge-m3" in result.stopped and "bytx setup" in result.stopped
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "transcribed"
+
+
+def test_run_without_summaries_does_not_need_the_chat_model(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path, summarize_enabled=False)
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="transcribed"))
+    store.replace_segments(conn, "aaaaaaaaaaa", [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="t")])
+    FakeOllamaClient.pulled = {"bge-m3"}
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.indexed, result.stopped) == (1, None)
+
+
+def test_run_with_nothing_to_index_never_contacts_ollama(conn, tmp_path):
+    assert pipeline.run(conn, make_config(tmp_path)).stopped is None
+    assert FakeOllamaClient.instances == []
 
 
 def test_run_continues_after_one_video_fails(conn, tmp_path, monkeypatch):

@@ -162,7 +162,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** with models missing, `run` raises, every video stays `queued` and none is `failed`. The CLI exits 1 with "bytx setup" in its output.
 
 ### T3a. Ollama gate in `run`
-- [ ] Done · **Needs:** T1b · **PRD:** R1.4
+- [x] Done · **Needs:** T1b · **PRD:** R1.4
 
 **Files:** `src/bytx/pipeline.py` (`RunSummary`, `run` lines 303-320), `src/bytx/cli.py` (`_do_run`), `tests/test_pipeline.py`.
 
