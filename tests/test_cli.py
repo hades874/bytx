@@ -172,6 +172,17 @@ class _NoOllama:
     def is_reachable(self):
         return False
 
+    def close(self):
+        pass
+
+
+class _RunningOllama(_NoOllama):
+    def is_reachable(self):
+        return True
+
+    def has_model(self, model):
+        return True
+
 
 class _Done:
     returncode = 0
@@ -191,6 +202,7 @@ def test_doctor_checks_each_configured_asr_model(config_path, monkeypatch):
 
 def test_setup_downloads_every_configured_model_then_pulls_ollama_models(config_path, tmp_path, monkeypatch):
     downloaded, calls = [], []
+    monkeypatch.setattr(cli, "OllamaClient", _RunningOllama)
     monkeypatch.setattr(cli.models, "download", lambda m, force=False: downloaded.append(m.key) or tmp_path)
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
 
@@ -527,3 +539,61 @@ def test_run_prints_why_it_stopped_and_still_succeeds(config_path, monkeypatch):
     result = runner.invoke(cli.app, ["run", "--config", config_path])
     assert result.exit_code == 0
     assert "Ollama (optional) isn't running" in result.output
+
+
+# --- Ollama is optional ------------------------------------------------------------------
+
+def test_setup_without_ollama_skips_its_models_and_succeeds(config_path, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
+
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "Skipped the Q&A and summary models" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize("args", [["ask", "why?"], ["search", "x", "--semantic"], ["summarize", "--all"]])
+def test_llm_commands_without_ollama_say_how_to_enable_them(config_path, monkeypatch, args):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    result = runner.invoke(cli.app, [*args, "--config", config_path])
+    assert result.exit_code == 1
+    assert "https://ollama.com" in result.output
+
+
+def test_keyword_search_works_without_ollama(config_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    _transcribed(tmp_path, "aaaaaaaaaaa", "hello world")
+    result = runner.invoke(cli.app, ["search", "hello", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "Title aaaaaaaaaaa" in result.output
+
+
+class _LoadedTranscriber:
+    device, compute_type = "cuda", "float16"
+
+    def __init__(self, *args):
+        pass
+
+    def unload(self):
+        pass
+
+
+def test_doctor_passes_without_ollama(config_path, tmp_path, monkeypatch):
+    import shutil
+
+    from bytx import transcribe
+
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.models, "local_path", lambda m: tmp_path)
+    monkeypatch.setattr(transcribe, "Transcriber", _LoadedTranscriber)
+    monkeypatch.setattr(shutil, "which", lambda tool: f"/bin/{tool}")
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _Done())
+
+    result = runner.invoke(cli.app, ["doctor", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "WARN" in result.output and "Ollama not reachable" in result.output

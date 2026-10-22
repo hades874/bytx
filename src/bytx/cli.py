@@ -45,6 +45,22 @@ def _conn(cfg: Config):
     return store.connect(cfg.paths.db_path)
 
 
+_OLLAMA_OPTIONAL = "It's optional: install it from https://ollama.com (or start it), then run `bytx setup`."
+
+
+def _ollama_client(cfg: Config) -> OllamaClient:
+    """A client for a running Ollama, or exit with how to get one."""
+    client = OllamaClient(cfg.ollama)
+    if not client.is_reachable():
+        client.close()
+        console.print(
+            f"[yellow]This needs Ollama, which isn't running at {cfg.ollama.host}. "
+            f"{_OLLAMA_OPTIONAL}[/yellow]"
+        )
+        raise typer.Exit(1)
+    return client
+
+
 _LANG_CHOICES = ", ".join(langs.SUPPORTED)
 _PLATFORM_CHOICES = ", ".join(platforms.SUPPORTED)
 
@@ -139,22 +155,25 @@ def doctor(config: str | None = _config_option) -> None:
             console.print(f"[red]FAIL[/red]  ASR model '{key}' failed to load: {escape(str(exc))}")
             ok = False
 
+    # Ollama only powers search by meaning, Q&A and summaries, so it never fails the check.
     try:
         with OllamaClient(cfg.ollama) as client:
             if not client.is_reachable():
-                console.print(f"[red]FAIL[/red]  Ollama not reachable at {cfg.ollama.host}")
-                ok = False
+                console.print(
+                    f"[yellow]WARN[/yellow]  Ollama not reachable at {cfg.ollama.host} (needed only for "
+                    f"search by meaning, Q&A and summaries). {_OLLAMA_OPTIONAL}"
+                )
             else:
                 console.print(f"[green]OK[/green]  Ollama reachable at {cfg.ollama.host}")
                 for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
                     if client.has_model(model):
                         console.print(f"[green]OK[/green]  Ollama model '{model}' present")
                     else:
-                        console.print(f"[yellow]MISSING[/yellow]  Ollama model '{model}'. Run `bytx setup`.")
-                        ok = False
+                        console.print(
+                            f"[yellow]WARN[/yellow]  Ollama model '{model}' missing. Run `bytx setup`."
+                        )
     except OllamaError as exc:
-        console.print(f"[red]FAIL[/red]  Ollama check failed: {exc}")
-        ok = False
+        console.print(f"[yellow]WARN[/yellow]  Ollama check failed: {exc}")
 
     if not ok:
         raise typer.Exit(1)
@@ -182,12 +201,20 @@ def setup(config: str | None = _config_option, force: bool = False) -> None:
             raise typer.Exit(1) from exc
         console.print(f"[green]OK[/green]  {key}: {path}")
 
-    for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
-        console.print(f"[bold]Pulling Ollama model[/bold]: {model}")
-        proc = subprocess.run(["ollama", "pull", model])
-        if proc.returncode != 0:
-            console.print(f"[red]Failed to pull {model}[/red]")
-            raise typer.Exit(1)
+    with OllamaClient(cfg.ollama) as client:
+        ollama_running = client.is_reachable()
+    if not ollama_running:
+        console.print(
+            f"[yellow]Skipped the Q&A and summary models: Ollama isn't running at {cfg.ollama.host}. "
+            f"{_OLLAMA_OPTIONAL}[/yellow]"
+        )
+    else:
+        for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
+            console.print(f"[bold]Pulling Ollama model[/bold]: {model}")
+            proc = subprocess.run(["ollama", "pull", model])
+            if proc.returncode != 0:
+                console.print(f"[red]Failed to pull {model}[/red]")
+                raise typer.Exit(1)
 
     console.print("[bold green]Setup complete.[/bold green] Run `bytx doctor` to verify.")
 
@@ -383,7 +410,7 @@ def search(
 
     if semantic:
         try:
-            with OllamaClient(cfg.ollama) as client:
+            with _ollama_client(cfg) as client:
                 hits = rag.semantic_search(conn, client, cfg, query, top_k=limit, channel=channel)
         except OllamaError as exc:
             console.print(f"[red]{exc}[/red]")
@@ -417,7 +444,7 @@ def ask(
     cfg = _load(config)
     conn = _conn(cfg)
     try:
-        with OllamaClient(cfg.ollama) as client:
+        with _ollama_client(cfg) as client:
             answer, hits = rag.ask(conn, client, cfg, question, video_id=video)
     except OllamaError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -453,7 +480,7 @@ def summarize(
         targets = [v]
 
     try:
-        with OllamaClient(cfg.ollama) as client:
+        with _ollama_client(cfg) as client:
             for v in targets:
                 pipeline.summarize_one(conn, cfg, client, v)
                 console.print(f"[green]Summarized[/green] {v.id}")

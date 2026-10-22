@@ -180,7 +180,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 - Reachable with models reaches `summarized`.
 
 ### T3b. Ollama-optional commands, setup and doctor
-- [ ] Done · **Needs:** T3a · **PRD:** R1.4
+- [x] Done · **Needs:** T3a · **PRD:** R1.4
 
 **Files:** `src/bytx/cli.py` (`ask`, `search`, `summarize`, `setup`, `doctor`), `tests/test_cli.py`.
 
