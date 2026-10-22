@@ -202,7 +202,7 @@ No telemetry, so only public counters and release checklists are used.
 |---|---|---|
 | Create a Hugging Face account and a `bytx` organisation (the name was free on 2026-10-22). | Maintainer | Blocks R1.3 |
 | Claim `bytx` on PyPI and configure the trusted publisher for this repo (the name was free on 2026-10-22). | Maintainer | Blocks R1.7 |
-| Do real YouTube and Facebook downloads work with ffmpeg off PATH, and does yt-dlp find the pip-installed Deno? | Engineering | Blocks dropping ffmpeg (R1.5) |
+| Do real YouTube and Facebook downloads work with ffmpeg off PATH, and does yt-dlp find the pip-installed Deno? **Partly answered 2026-10-22 (spike S0):** with neither ffmpeg nor Deno on PATH (the venv's Scripts folder off PATH, as in a `uv tool` install), yt-dlp reports `JS runtimes: deno-2.9.8`, so it finds the pip Deno by itself. A YouTube `bestaudio` download (webm/opus, 265 s) decoded with PyAV, no ffmpeg. Facebook is not checked yet: the library has no Facebook video. | Engineering | Facebook part only: checked in T5d |
 | Do Linux GPU installs find the pip CUDA libraries without `LD_LIBRARY_PATH`? There's no Linux GPU machine to test on. | Community / engineering | No (documented as community-tested) |
 | During the maintainer migration, reuse the existing local `models/` (3 GB) or download again from Hugging Face? | Engineering | No |
 | Responsible-use wording in the README. | Maintainer | No |

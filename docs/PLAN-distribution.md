@@ -69,7 +69,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 ## Phase 0
 
 ### S0. Spike: downloads with ffmpeg and Deno off PATH
-- [ ] Done · **Needs:** nothing · **PRD:** R1.5, §9 open question 3 · **Blocks:** T5c and the ffmpeg drop
+- [x] Done (2026-10-22). yt-dlp finds the pip Deno with nothing on PATH, and a YouTube download decodes without ffmpeg, so T5c needs no `js_runtimes` option. Facebook is still unchecked (no Facebook video in the library); T5d covers it. Details in PRD §9. · **Needs:** nothing · **PRD:** R1.5, §9 open question 3 · **Blocks:** T5c and the ffmpeg drop
 
 **Do:** Open a fresh shell *without* `env.ps1` and create a scratch venv outside the repo with `uv pip install "yt-dlp[default,deno]" faster-whisper`. Check that `where ffmpeg` and `where deno` find nothing. Download `bestaudio/best` for one YouTube URL and one Facebook URL using the same options as `fetch.download_audio`, then decode each file with `faster_whisper.decode_audio`.
 
