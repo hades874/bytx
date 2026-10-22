@@ -13,8 +13,11 @@ ollama-models/
 .agents/
 skills-lock.json
 
-# Your personal transcript library: a record of what you've transcribed.
-# Trackable if you want a git-backed personal archive; ignored by default
-# so a fork doesn't ship with someone else's transcribed video history.
+# A personal library, from before it moved to the data folder (~/bytx or
+# $BYTX_HOME). Kept ignored so an old copy in a clone is never committed.
 TRANSCRIBED_LEDGER.md
 yt-transcribed-files/
+/config.toml
+/glossary.txt
+/urls.txt
+/env.ps1

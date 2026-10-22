@@ -276,7 +276,7 @@ Add `[project.urls]`, `classifiers` and `keywords` to pyproject.
 **Done when:** CI is green on the branch. A failing test makes `publish` skip, because of `needs`.
 
 ### T7. Docs and repo cleanup
-- [ ] Done · **Needs:** T1a–T5c, T6 · **PRD:** R1.8
+- [x] Done · *The README-only walkthrough on a fresh machine is checked in T10. The responsible-use wording is a draft for the maintainer to approve (PRD §9).* · **Needs:** T1a–T5c, T6 · **PRD:** R1.8
 
 **Files:** `README.md`, `CLAUDE.md`, `docs/SOP-video-transcription.md`, `.gitignore`, `pyproject.toml` (the `testpaths` comment).
 

@@ -8,18 +8,19 @@ Distribution roadmap and settled decisions: `docs/PRD-distribution.md`. Read it 
 
 ## Commands
 
-Python 3.12, managed with `uv`. On this machine all tools/caches are project-local: dot-source `. .\env.ps1` in PowerShell first (puts `tools/uv`, ffmpeg and deno on PATH and redirects uv/HF/Ollama caches).
+Python 3.12, managed with `uv`.
 
 ```
-uv sync --extra gpu              # CUDA libs (plain `uv sync` removes them); --extra convert adds torch
-uv run bytx setup                # download/convert ASR models, pull Ollama models
-uv run bytx doctor               # verify GPU/ffmpeg/deno/Ollama wiring
+uv sync --extra gpu              # dev env with CUDA libs (plain `uv sync` without NVIDIA, and it removes them); --extra convert adds torch
 uv run pytest                    # offline suite, no GPU/network (testpaths = tests)
 uv run pytest tests/test_store.py::test_name   # single test
 uv run ruff check .              # lint (line length 110; tests exempt from E501)
+uv tool install --editable ".[gpu]"   # an installed `bytx` on PATH that runs this working copy
 ```
 
-Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings live in `config.toml`, loaded by `config.py`.
+Daily use goes through the installed `bytx`, like any user's: `bytx setup` downloads the ASR models into the Hugging Face cache and pulls Ollama models if Ollama runs; `bytx doctor` checks the data folder, Deno, models, GPU and Ollama.
+
+Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings: the packaged `src/bytx/defaults.toml`, with the user's `config.toml` from the data folder deep-merged over it (`config.py`). The data folder is `$BYTX_HOME`, else `~/bytx`; `--config <file>` makes that file's folder the data folder. ASR models are found and downloaded only through `models.py` (a local CTranslate2 folder as `source`, or the HF cache).
 
 ## Transcribing videos
 
@@ -35,10 +36,12 @@ When asked to transcribe new videos (e.g. those in `urls.txt`), follow `docs/SOP
 
 **Raw ASR text is never modified.** `glossary.py` produces a separate `transcript.clean.txt` (find/replace of known mis-hearings) and primes the decoder for languages in `asr.glossary_prompt_languages`. `quality.py` computes flags (words/min, gaps, low `avg_logprob`/`no_speech_prob`) from stored segments; `compare.py` cross-checks against YouTube auto-captions. `pipeline.reexport` rebuilds all derived files from the DB.
 
-**Storage is three-layered:**
-- `data/library.db` (`store.py`): SQLite with a trigram FTS5 index, embedding chunks and summaries, plus schema migrations via `_migrate` (existing rows upgraded on open). `data/videos/<id>/` holds DB-linked exports. Both gitignored.
-- `yt-transcribed-files/<date>/<channel> - <title>/` (`export.py`): human-readable copy, with a hidden `.video_id` file tying folder to video, and a generated `INDEX.md`. Gitignored by default (trackable if you want a personal git-backed archive).
-- `TRANSCRIBED_LEDGER.md` (`ledger.py`): append-only record of transcribed ids, checked by `bytx add` so videos are never re-transcribed after `data/` is wiped. Gitignored by default. To force a re-transcribe, remove the ledger entry and the DB row.
+**Storage is three-layered, all inside the data folder (never the repo):**
+- `data/library.db` (`store.py`): SQLite with a trigram FTS5 index, embedding chunks and summaries, plus schema migrations via `_migrate` (existing rows upgraded on open). `data/videos/<id>/` holds DB-linked exports.
+- `yt-transcribed-files/<date>/<channel> - <title>/` (`export.py`): human-readable copy, with a hidden `.video_id` file tying folder to video, and a generated `INDEX.md`.
+- `TRANSCRIBED_LEDGER.md` (`ledger.py`): append-only record of transcribed ids, checked by `bytx add` so videos are never re-transcribed after `data/` is wiped. `bytx remove` (`pipeline.remove_video`) clears a video from all three.
+
+**Ollama is optional.** `pipeline.run` raises `models.ModelsMissing` before touching any video when ASR models aren't downloaded (videos stay `queued`), and returns early with `RunSummary.stopped` when Ollama or its models are missing (videos stay `transcribed`). Neither case may mark videos `failed`.
 
 **Platforms** (`platforms.py`, `fetch.py`): YouTube ids are stored bare (11 chars); Facebook ids are `fb_<number>`. Everything downstream (paths, ledger, CLI args) uses these ids. Facebook has no uploader subtitles and no playlist extractor in yt-dlp.
 
@@ -46,4 +49,4 @@ When asked to transcribe new videos (e.g. those in `urls.txt`), follow `docs/SOP
 
 ## Testing notes
 
-`tests/conftest.py` puts `src/` on `sys.path` and configures UTF-8 stdio (Bangla output on Windows consoles); `textio.configure_utf8_io` does the same for the CLI. Tests are fully offline, so mock yt-dlp, faster-whisper and Ollama rather than calling them.
+`tests/conftest.py` puts `src/` on `sys.path` and configures UTF-8 stdio (Bangla output on Windows consoles); `textio.configure_utf8_io` does the same for the CLI. An autouse fixture there points `BYTX_HOME` at a temp folder, so no test touches the real data folder. Tests are fully offline, so mock yt-dlp, faster-whisper, Hugging Face downloads and Ollama rather than calling them.

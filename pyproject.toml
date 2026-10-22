@@ -64,8 +64,8 @@ dev = [
 
 [tool.pytest.ini_options]
 # Without this, pytest's default collection walks the whole project tree,
-# including tools/uv-cache (project-local uv cache -- see env.ps1), which
-# contains unrelated third-party test files from cached wheels.
+# including any project-local caches (e.g. a uv cache under tools/), which
+# hold unrelated third-party test files from cached wheels.
 testpaths = ["tests"]
 
 [tool.ruff]
