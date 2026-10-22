@@ -26,6 +26,8 @@ of truth. `reexport` rebuilds all of those files from the database.
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -370,6 +372,58 @@ def reexport(conn, cfg: Config, video_ids: list[str] | None = None) -> list[str]
         write_shared_copy(cfg, video, segments, assessment)
         done.append(video.id)
     return done
+
+
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]+")  # YouTube ids, and fb_<digits>
+
+
+@dataclass
+class Removal:
+    """Everywhere bytx has recorded one video (see remove_video)."""
+
+    video_id: str
+    video: store.Video | None  # the DB row (segments, chunks and summary go with it)
+    data_dir: Path | None  # data/videos/<id>/
+    shared_folder: Path | None  # its folder under transcribed_files_dir
+    ledger_entry: bool
+
+    @property
+    def empty(self) -> bool:
+        return not (self.video or self.data_dir or self.shared_folder or self.ledger_entry)
+
+
+def remove_video(conn, cfg: Config, video_id: str, apply: bool = False) -> Removal:
+    """Finds everything recorded for `video_id` and, with `apply`, deletes it,
+    so `bytx add` accepts the video again (e.g. to redo it in the right
+    language). Without `apply` nothing changes. Raises ValueError for
+    something that isn't a video id, before any path is built from it."""
+    if not _VIDEO_ID_RE.fullmatch(video_id):
+        raise ValueError(f"{video_id!r} is not a video id")
+    data_dir = export.video_dir(cfg.paths.videos_dir, video_id)
+    ledger_file = ledger.ledger_path(cfg)
+    removal = Removal(
+        video_id=video_id,
+        video=store.get_video(conn, video_id),
+        data_dir=data_dir if data_dir.is_dir() else None,
+        shared_folder=export.find_transcript_folder(cfg.paths.transcribed_files_dir, video_id),
+        ledger_entry=video_id in ledger.load_seen_ids(ledger_file),
+    )
+    if not apply:
+        return removal
+
+    if removal.video:
+        store.delete_video(conn, video_id)
+    if removal.data_dir:
+        shutil.rmtree(removal.data_dir)
+    if removal.shared_folder:
+        shutil.rmtree(removal.shared_folder)
+        date_dir = removal.shared_folder.parent
+        if not any(date_dir.iterdir()):
+            date_dir.rmdir()
+        export.write_index(cfg.paths.transcribed_files_dir)
+    if removal.ledger_entry:
+        ledger.remove_entry(ledger_file, video_id)
+    return removal
 
 
 def retry_failed(conn) -> int:

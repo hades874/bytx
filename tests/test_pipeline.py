@@ -1239,3 +1239,71 @@ def test_transcribe_one_records_quality_and_confidence_in_the_shared_copy(conn, 
     assert "low-confidence" in " ".join(meta["quality"]["flags"])
     seg = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["segments"][0]
     assert seg["avg_logprob"] == -1.5
+
+
+# --- remove_video -------------------------------------------------------------------
+
+def _library_with(conn, tmp_path, monkeypatch, vids):
+    """Runs `vids` through the whole pipeline, so each has a DB row, chunks, a
+    summary, data/videos/<id>/, a transcript copy and a ledger entry."""
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    for v in vids:
+        store.upsert_video(conn, store.Video(id=v, url=video_url(v), status="queued"))
+    assert pipeline.run(conn, cfg).summarized == len(vids)
+    return cfg
+
+
+def test_remove_video_dry_run_finds_everything_and_changes_nothing(conn, tmp_path, monkeypatch):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa"])
+
+    removal = pipeline.remove_video(conn, cfg, "aaaaaaaaaaa")
+
+    assert removal.video is not None and removal.ledger_entry
+    assert removal.data_dir == cfg.paths.videos_dir / "aaaaaaaaaaa"
+    assert removal.shared_folder is not None and removal.shared_folder.is_dir()
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "summarized"
+    assert removal.data_dir.is_dir()
+    assert "aaaaaaaaaaa" in ledger.load_seen_ids(ledger.ledger_path(cfg))
+
+
+def test_remove_video_deletes_every_trace_and_the_video_can_be_added_again(conn, tmp_path, monkeypatch):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+    shared = pipeline.remove_video(conn, cfg, "aaaaaaaaaaa").shared_folder
+
+    pipeline.remove_video(conn, cfg, "aaaaaaaaaaa", apply=True)
+
+    assert store.get_video(conn, "aaaaaaaaaaa") is None
+    assert store.get_segments(conn, "aaaaaaaaaaa") == []
+    assert store.get_chunks(conn, "aaaaaaaaaaa") == []
+    assert store.get_summary(conn, "aaaaaaaaaaa") is None
+    assert [h.video_id for h in store.search_fts(conn, "default")] == ["bbbbbbbbbbb"]
+    assert not (cfg.paths.videos_dir / "aaaaaaaaaaa").exists()
+    assert not shared.exists()
+    index = (cfg.paths.transcribed_files_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "Title aaaaaaaaaaa" not in index and "Title bbbbbbbbbbb" in index
+    assert ledger.load_seen_ids(ledger.ledger_path(cfg)) == {"bbbbbbbbbbb"}
+    assert store.get_video(conn, "bbbbbbbbbbb").status == "summarized"  # the other video is untouched
+
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [video_url("aaaaaaaaaaa")])
+    assert pipeline.add_targets(conn, cfg, ["x"], language="en") == ["aaaaaaaaaaa"]
+
+
+def test_remove_video_drops_the_date_folder_once_it_is_empty(conn, tmp_path, monkeypatch):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa"])
+    date_dir = pipeline.remove_video(conn, cfg, "aaaaaaaaaaa").shared_folder.parent
+    pipeline.remove_video(conn, cfg, "aaaaaaaaaaa", apply=True)
+    assert not date_dir.exists()
+    assert (cfg.paths.transcribed_files_dir / "INDEX.md").is_file()
+
+
+def test_remove_video_of_an_unknown_id_finds_nothing(conn, tmp_path):
+    assert pipeline.remove_video(conn, make_config(tmp_path), "zzzzzzzzzzz", apply=True).empty
+
+
+@pytest.mark.parametrize("bad", ["..", ".", "a/b", r"a\b", "", "../data"])
+def test_remove_video_rejects_anything_that_is_not_a_video_id(conn, tmp_path, monkeypatch, bad):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa"])
+    with pytest.raises(ValueError, match="is not a video id"):
+        pipeline.remove_video(conn, cfg, bad, apply=True)
+    assert cfg.paths.db_path.parent.is_dir() and (cfg.paths.videos_dir / "aaaaaaaaaaa").is_dir()

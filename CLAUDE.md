@@ -23,7 +23,7 @@ Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings live in `config.
 
 ## Transcribing videos
 
-When asked to transcribe new videos (e.g. those in `urls.txt`), follow `docs/SOP-video-transcription.md`. The two rules that matter most: always pass an explicit `--lang` to `bytx add` (never rely on `asr.default_language`; an English video queued as `bn` produces Bangla-script gibberish that no quality flag catches), and verify the transcript text yourself before reporting success (`failed=0` does not mean correct). To redo a video, use `scripts/redo_video.py`, and ask before deleting.
+When asked to transcribe new videos (e.g. those in `urls.txt`), follow `docs/SOP-video-transcription.md`. The two rules that matter most: always pass an explicit `--lang` to `bytx add` (never rely on `asr.default_language`; an English video queued as `bn` produces Bangla-script gibberish that no quality flag catches), and verify the transcript text yourself before reporting success (`failed=0` does not mean correct). To redo a video, use `bytx remove <id>` (dry run; `--yes` deletes), and ask before deleting.
 
 ## Architecture
 

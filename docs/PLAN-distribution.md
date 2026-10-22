@@ -195,7 +195,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** cover each of those with `OllamaClient.is_reachable` monkeypatched to `False`.
 
 ### T4. `bytx remove <id>`
-- [ ] Done · **Needs:** T1b · **PRD:** R1.6
+- [x] Done · **Needs:** T1b · **PRD:** R1.6
 
 **Files:** `src/bytx/ledger.py`, `src/bytx/pipeline.py`, `src/bytx/cli.py`; `scripts/redo_video.py` (delete); `tests/test_ledger.py`, `tests/test_pipeline.py`, `tests/test_cli.py`.
 

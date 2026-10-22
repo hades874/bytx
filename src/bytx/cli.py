@@ -498,6 +498,40 @@ def retry(config: str | None = _config_option) -> None:
     console.print(f"Requeued {count} failed video(s).")
 
 
+@app.command()
+def remove(
+    video_id: str,
+    yes: bool = typer.Option(False, "--yes", help="Delete (default: only list what would be deleted)"),
+    config: str | None = _config_option,
+) -> None:
+    """Remove a video completely, so it can be added again (e.g. with the right --lang)."""
+    cfg = _load(config)
+    conn = _conn(cfg)
+    try:
+        removal = pipeline.remove_video(conn, cfg, video_id)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    if removal.empty:
+        console.print(
+            f"[red]No such video: {escape(video_id)}[/red] (not in the library, its folders or the ledger)"
+        )
+        raise typer.Exit(1)
+
+    v = removal.video
+    lang = escape(f"[{v.language}]") if v and v.language else ""
+    console.print(f"video {video_id}: {escape(v.title or v.url) if v else '(not in the database)'}  {lang}")
+    console.print(f"  database row:     {'yes' if v else 'no'}")
+    console.print(f"  data folder:      {removal.data_dir or 'none'}")
+    console.print(f"  transcript copy:  {removal.shared_folder or 'none'}")
+    console.print(f"  ledger entry:     {'yes' if removal.ledger_entry else 'no'}")
+    if not yes:
+        console.print("Dry run: nothing was deleted. Run again with --yes to delete the above.")
+        return
+    pipeline.remove_video(conn, cfg, video_id, apply=True)
+    console.print(f"[green]Removed {video_id}.[/green] Re-add it with `bytx add <url> --lang bn|en`.")
+
+
 @app.command(name="quality")
 def quality_cmd(
     video_id: str | None = typer.Argument(None, help="One video to inspect in detail"),

@@ -97,11 +97,11 @@ user asks. Do not touch `urls.txt` (it is the user's input file).
 ## Redoing a video
 
 Use when the language was wrong or the transcript is unusable. `bytx add` refuses anything in the DB or
-ledger, so all of it has to be cleared first. The helper does that and rebuilds `INDEX.md`:
+ledger, so all of it has to be cleared first. `bytx remove` does that and rebuilds `INDEX.md`:
 
 ```powershell
-uv run python scripts/redo_video.py <video_id>          # dry run: shows what would be deleted
-uv run python scripts/redo_video.py <video_id> --yes    # delete DB row, data/videos/<id>, shared folder, ledger entry
+uv run bytx remove <video_id>          # dry run: shows what would be deleted
+uv run bytx remove <video_id> --yes    # delete DB row, data/videos/<id>, shared folder, ledger entry
 uv run bytx add <url> --lang <bn|en> --run
 ```
 

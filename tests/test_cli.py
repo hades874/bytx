@@ -597,3 +597,28 @@ def test_doctor_passes_without_ollama(config_path, tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "WARN" in result.output and "Ollama not reachable" in result.output
+
+
+# --- remove -----------------------------------------------------------------------------
+
+def test_remove_is_a_dry_run_without_yes(config_path, tmp_path):
+    _transcribed(tmp_path, "aaaaaaaaaaa", "hello")
+    result = runner.invoke(cli.app, ["remove", "aaaaaaaaaaa", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "database row:     yes" in result.output and "Dry run" in result.output
+    assert db(tmp_path).execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 1
+
+
+def test_remove_with_yes_deletes_the_video(config_path, tmp_path):
+    _transcribed(tmp_path, "aaaaaaaaaaa", "hello")
+    result = runner.invoke(cli.app, ["remove", "aaaaaaaaaaa", "--yes", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "Removed aaaaaaaaaaa" in result.output
+    assert db(tmp_path).execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(("video_id", "message"), [("zzzzzzzzzzz", "No such video"), ("..", "is not a video id")])
+def test_remove_of_an_unknown_or_bad_id_exits_non_zero(config_path, video_id, message):
+    result = runner.invoke(cli.app, ["remove", video_id, "--yes", "--config", config_path])
+    assert result.exit_code == 1
+    assert message in result.output
