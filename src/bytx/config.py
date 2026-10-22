@@ -7,6 +7,7 @@ imported early, before any heavy ML libraries.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from importlib.resources import files
@@ -63,7 +64,7 @@ class AsrConfig:
     # words the Bangla model writes for a sample of it are Bangla function
     # words (see langdetect.py).
     auto_english_below: float = 0.10
-    # Vocabulary file (see glossary.py); relative to the project root. None disables it.
+    # Vocabulary file (see glossary.py); relative to the data folder. None disables it.
     glossary: Path | None = None
     # Languages whose decoding is primed with the glossary's terms. Priming a
     # fine-tuned model can make it echo the prompt, so Bangla is opt-in.
@@ -178,7 +179,6 @@ class Config:
         self.paths.data_dir.mkdir(parents=True, exist_ok=True)
         self.paths.videos_dir.mkdir(parents=True, exist_ok=True)
         self.paths.audio_dir.mkdir(parents=True, exist_ok=True)
-        self.paths.models_dir.mkdir(parents=True, exist_ok=True)
         self.paths.transcribed_files_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -203,11 +203,17 @@ def load_defaults() -> dict:
     return tomllib.loads((files(__package__) / DEFAULTS_FILENAME).read_text(encoding="utf-8"))
 
 
+def data_home() -> Path:
+    """The data folder: $BYTX_HOME, else ~/bytx."""
+    env = os.environ.get("BYTX_HOME")
+    return Path(env).expanduser() if env else Path.home() / "bytx"
+
+
 def load_config(path: str | Path | None = None) -> Config:
     """Load the packaged defaults with the user's config.toml merged over them.
-    `path` names the user file (it must exist); otherwise it is config.toml
-    next to the project root (found by walking up from cwd looking for
-    pyproject.toml), and may be missing.
+    `path` names the user file (it must exist) and its folder is the data
+    folder; otherwise the data folder is `data_home()` and its config.toml
+    may be missing.
     """
     if path is not None:
         config_path = Path(path)
@@ -215,7 +221,7 @@ def load_config(path: str | Path | None = None) -> Config:
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found at {config_path}.")
     else:
-        root = _find_project_root(Path.cwd())
+        root = data_home()
         config_path = root / DEFAULT_CONFIG_FILENAME
 
     raw = load_defaults()
@@ -348,10 +354,3 @@ def load_config(path: str | Path | None = None) -> Config:
         summarize=summarize,
         quality=quality,
     )
-
-
-def _find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "pyproject.toml").exists():
-            return candidate
-    return start

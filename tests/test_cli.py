@@ -497,3 +497,14 @@ def test_compare_unknown_video_and_missing_file_fail(config_path, tmp_path):
     missing = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--against", "nofile.vtt", "--config", config_path])
     assert missing.exit_code == 1
     assert "No such file" in missing.output
+
+
+# --- data folder ----------------------------------------------------------------------
+
+def test_the_first_command_creates_the_data_folder(tmp_path, monkeypatch):
+    home = tmp_path / "fresh"
+    monkeypatch.setenv("BYTX_HOME", str(home))
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "No videos in the library yet" in result.output
+    assert (home / "data" / "library.db").is_file()

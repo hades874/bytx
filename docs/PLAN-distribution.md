@@ -96,7 +96,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 - Fix any test that assumed `[asr.language_models]` is empty when the file leaves it out; merged defaults now fill it.
 
 ### T1b. Data folder resolution (`~/bytx`, `BYTX_HOME`)
-- [ ] Done · **Needs:** T1a · **PRD:** R1.1
+- [x] Done · **Needs:** T1a · **PRD:** R1.1
 
 **Files:** `src/bytx/config.py`, `src/bytx/cli.py` (`_config_option` help text), `tests/conftest.py`, `tests/test_config.py`.
 

@@ -256,3 +256,41 @@ def test_shipped_config_quality_matches_the_documented_defaults(tmp_path):
     from bytx.config import QualityConfig
 
     assert shipped(tmp_path).quality == QualityConfig()
+
+
+# --- where the data folder is ---------------------------------------------------------
+
+def test_bytx_home_is_the_data_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("BYTX_HOME", str(tmp_path / "lib"))
+    cfg = load_config()
+    assert cfg.root == tmp_path / "lib"
+    assert cfg.paths.db_path == tmp_path / "lib" / "data" / "library.db"
+    assert cfg.paths.transcribed_files_dir == tmp_path / "lib" / "yt-transcribed-files"
+    assert cfg.asr.glossary == tmp_path / "lib" / "glossary.txt"
+
+
+def test_bytx_home_config_toml_is_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("BYTX_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[asr]\ndevice = "cpu"\n', encoding="utf-8")
+    assert load_config().asr.device == "cpu"
+
+
+def test_without_bytx_home_the_data_folder_is_bytx_in_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("BYTX_HOME")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert load_config().root == tmp_path / "bytx"
+
+
+def test_an_explicit_config_wins_over_bytx_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("BYTX_HOME", str(tmp_path / "home"))
+    (tmp_path / "elsewhere").mkdir()
+    cfg = write_config(tmp_path / "elsewhere", '[asr]\ndevice = "cpu"\n')
+    assert cfg.root == tmp_path / "elsewhere"
+    assert cfg.asr.device == "cpu"
+
+
+def test_the_ledger_lives_in_the_data_folder(tmp_path, monkeypatch):
+    from bytx import ledger
+
+    monkeypatch.setenv("BYTX_HOME", str(tmp_path))
+    assert ledger.ledger_path(load_config()) == tmp_path / "TRANSCRIBED_LEDGER.md"

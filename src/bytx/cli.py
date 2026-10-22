@@ -25,7 +25,11 @@ configure_utf8_io()
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
 
-_config_option = typer.Option(None, "--config", help="Path to config.toml (default: project root)")
+_config_option = typer.Option(
+    None, "--config",
+    help="Path to a config.toml with your overrides; its folder is the data folder "
+    "(default: ~/bytx, or $BYTX_HOME)",
+)
 
 
 def _load(config_path: str | None) -> Config:
