@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `bytx` is a local, free/open-source CLI that transcribes Bangla and English YouTube/Facebook videos (faster-whisper) into a searchable, askable library (SQLite FTS5 + Ollama). README.md is detailed and accurate; read it for user-facing behavior, config semantics and the measured rationale behind design choices.
 
+Distribution roadmap and settled decisions: `docs/PRD-distribution.md`. Read it before changing install, config/data paths, models, dependencies or the UI. Task breakdown (pick the next unchecked task there): `docs/PLAN-distribution.md`.
+
 ## Commands
 
 Python 3.12, managed with `uv`. On this machine all tools/caches are project-local: dot-source `. .\env.ps1` in PowerShell first (puts `tools/uv`, ffmpeg and deno on PATH and redirects uv/HF/Ollama caches).
