@@ -253,7 +253,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** replace `test_doctor_says_deno_is_only_needed_for_youtube`. Add: no ffmpeg check, the GPU hint (mock `shutil.which` and `subprocess.run`), and the data folder line.
 
 ### T5d. Manual gates for R1.5 (Maintainer)
-- [ ] Done · **Needs:** T5c · **PRD:** R1.5
+- [ ] Done · **Needs:** T5c · **PRD:** R1.5 · *CPU benchmark done (RTF 0.90 at 4 threads, 0.87 at 6, on a different clip than the 2.25 baseline; see PRD §11). Still open: one real Facebook download + transcription with ffmpeg off PATH, and settling the README's CPU speed figure.*
 
 **Do:**
 - With ffmpeg off PATH and no system Deno, `bytx add <youtube-url> --lang <x> --run` and the same for one Facebook URL must both succeed. Read each transcript. **This check gates dropping ffmpeg.**

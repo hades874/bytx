@@ -250,6 +250,7 @@ No hard deadlines. Order:
 
 Measured 2026-10-22:
 - **CPU speed:** `tugstugi-medium-bn` on CPU int8 (Ryzen 5 5600, default 4 threads) took 404.5 s for a 180 s clip, a real-time factor of 2.25. No clips hit the token cap.
+- **CPU speed, re-measured 2026-10-22 (T5d):** same machine, a different 180 s clip (`UkLJpcuJOIA` 1:00–4:00, 366 words), model load timed separately: 4 threads 161.2 s (RTF 0.90), 6 threads = physical cores 156.7 s (RTF 0.87), with identical output. The thread fix gains about 3%. The 2.25 baseline is not reproduced; its clip and conditions weren't recorded, so the README's "about 2.25×" may be pessimistic or clip-dependent. **Open for the maintainer:** re-run `bytx bench` on the original clip before publishing speed figures.
 - **CUDA wheels (Windows):** cublas 528 MB + cudnn 712 MB + nvrtc 73 MB.
 - **Licenses:** the Bangla source model is Apache-2.0; `deepdml/faster-whisper-large-v3-turbo-ct2` is MIT.
 - **Library:** 45 videos; `data/` 15 MB, `yt-transcribed-files/` 4.6 MB, `models/` 3.0 GB.
