@@ -10,7 +10,7 @@ from pathlib import Path
 
 from rich.markup import escape
 
-from . import fetch, glossary
+from . import fetch, glossary, models
 from .config import Config
 from .transcribe import Transcriber
 
@@ -87,12 +87,10 @@ def _bench_one_model(
     if model_cfg is None:
         console.print(f"[red]Unknown model key: {key}[/red]")
         return
-    model_dir = cfg.paths.models_dir / key
-    if not model_dir.exists():
-        console.print(
-            f"[yellow]Model '{key}' not converted yet. Run: "
-            f"uv run --extra convert python scripts/convert_model.py {key}[/yellow]"
-        )
+    try:
+        model_dir = models.local_path(model_cfg)
+    except models.ModelsMissing as exc:
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
         return
 
     # Same glossary priming as a real run, so `asr.glossary_prompt_languages` can be

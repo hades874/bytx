@@ -116,7 +116,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 - A CLI `status` run against an empty `BYTX_HOME` creates the folder.
 
 ### T2a. `models.py`; setup downloads only
-- [ ] Done · **Needs:** T1b · **PRD:** R1.3
+- [x] Done · **Needs:** T1b · **PRD:** R1.3
 
 **Files:** new `src/bytx/models.py`, `src/bytx/cli.py` (`setup`), `scripts/convert_model.py`, new `tests/test_models.py`.
 
@@ -135,7 +135,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 - `missing` lists only the absent keys.
 
 ### T2b. Read models through `models.local_path`
-- [ ] Done · **Needs:** T2a · **PRD:** R1.3
+- [x] Done · **Needs:** T2a · **PRD:** R1.3
 
 **Files:** `src/bytx/transcribe.py` (`TranscriberPool._get` at line 472, the `Transcriber._load` message at line 236), `src/bytx/bench.py` (`_bench_one_model`, line 90), `src/bytx/cli.py` (`doctor` model loop), `src/bytx/config.py` (`PathsConfig`). Test fixtures that build `PathsConfig`: `test_pipeline.py`, `test_rag.py`, `test_summarize.py`, `test_fetch.py`, `test_transcribe.py`.
 

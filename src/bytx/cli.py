@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import logging
 import subprocess
-import sys
 from pathlib import Path
 
 import typer
@@ -14,7 +13,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from . import compare as compare_module
-from . import export, fetch, langs, pipeline, platforms, quality, rag, store
+from . import export, fetch, langs, models, pipeline, platforms, quality, rag, store
 from .config import Config, load_config
 from .cuda_dll import ensure_cuda_dll_paths
 from .llm import OllamaClient, OllamaError
@@ -117,12 +116,10 @@ def doctor(config: str | None = _config_option) -> None:
         raise typer.Exit(1) from exc
 
     for key in model_keys:
-        model_dir = cfg.paths.models_dir / key
-        if not model_dir.exists():
-            console.print(
-                f"[yellow]MISSING[/yellow]  ASR model '{key}' not found at {model_dir}. "
-                f"Run `bytx setup`."
-            )
+        try:
+            model_dir = models.local_path(cfg.asr.models[key])
+        except models.ModelsMissing as exc:
+            console.print(f"[yellow]MISSING[/yellow]  {escape(str(exc))}")
             ok = False
             continue
         console.print(f"[green]OK[/green]  ASR model '{key}' present at {model_dir}")
@@ -166,10 +163,8 @@ def doctor(config: str | None = _config_option) -> None:
 
 @app.command()
 def setup(config: str | None = _config_option, force: bool = False) -> None:
-    """Convert/download every configured ASR model and pull Ollama models."""
+    """Download every configured ASR model and pull the Ollama models."""
     cfg = _load(config)
-    scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
-    convert_script = scripts_dir / "convert_model.py"
 
     try:
         cfg.asr.active_model()
@@ -180,16 +175,12 @@ def setup(config: str | None = _config_option, force: bool = False) -> None:
 
     for key in model_keys:
         console.print(f"[bold]Setting up ASR model[/bold]: {key}")
-        cmd = [sys.executable, str(convert_script), key]
-        if force:
-            cmd.append("--force")
-        if config:
-            cmd.extend(["--config", config])
-        proc = subprocess.run(cmd)
-        if proc.returncode != 0:
-            console.print("[red]Model setup failed.[/red] If this is the first run, install the 'convert' "
-                           "extra: uv sync --extra convert")
-            raise typer.Exit(1)
+        try:
+            path = models.download(cfg.asr.models[key], force=force)
+        except Exception as exc:  # noqa: BLE001 - config, network and Hugging Face errors
+            console.print(f"[red]Model setup failed:[/red] {escape(str(exc))}")
+            raise typer.Exit(1) from exc
+        console.print(f"[green]OK[/green]  {key}: {path}")
 
     for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
         console.print(f"[bold]Pulling Ollama model[/bold]: {model}")

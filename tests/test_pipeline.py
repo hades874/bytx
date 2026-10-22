@@ -37,7 +37,6 @@ def make_config(tmp_path: Path, *, summarize_enabled: bool = True) -> Config:
         root=tmp_path,
         paths=PathsConfig(
             data_dir=tmp_path / "data",
-            models_dir=tmp_path / "models",
             transcribed_files_dir=tmp_path / "yt-transcribed-files",
         ),
         asr=AsrConfig(

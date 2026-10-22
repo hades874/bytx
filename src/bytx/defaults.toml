@@ -5,7 +5,6 @@
 
 [paths]
 data_dir = "data"
-models_dir = "models"
 # Human-browsable copies of transcripts, named "<channel> - <title>".
 # Separate from data/videos/<id>/, which is DB-linked.
 transcribed_files_dir = "yt-transcribed-files"

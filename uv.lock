@@ -120,6 +120,7 @@ source = { editable = "." }
 dependencies = [
     { name = "faster-whisper" },
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "jiwer" },
     { name = "numpy" },
     { name = "nvidia-cublas-cu12" },
@@ -145,6 +146,7 @@ dev = [
 requires-dist = [
     { name = "faster-whisper", specifier = ">=1.2.1" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "huggingface-hub", specifier = ">=0.21" },
     { name = "jiwer", specifier = ">=4.0.0" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "nvidia-cublas-cu12", specifier = ">=12.9.2.10" },

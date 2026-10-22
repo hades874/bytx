@@ -30,7 +30,7 @@ from faster_whisper.audio import decode_audio
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 from . import glossary as glossary_mod
-from . import store
+from . import models, store
 from .config import AsrConfig, AsrModelConfig, Config
 from .cuda_dll import ensure_cuda_dll_paths
 
@@ -232,8 +232,7 @@ class Transcriber:
             return
         if not self.model_dir.exists():
             raise ModelLoadError(
-                f"Model directory {self.model_dir} does not exist. "
-                f"Run `bytx setup` (or scripts/convert_model.py {self.model_cfg.key}) first."
+                f"Model directory {self.model_dir} does not exist. Run `bytx setup` first."
             )
         ensure_cuda_dll_paths()
 
@@ -469,7 +468,7 @@ class TranscriberPool:
             return self._current
         self.unload()
         self._current = Transcriber(
-            self.cfg.paths.models_dir / model_cfg.key, model_cfg, self.cfg.asr, self._glossary
+            models.local_path(model_cfg), model_cfg, self.cfg.asr, self._glossary
         )
         return self._current
 

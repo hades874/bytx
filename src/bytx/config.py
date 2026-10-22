@@ -148,7 +148,6 @@ class SummarizeConfig:
 @dataclass(frozen=True)
 class PathsConfig:
     data_dir: Path
-    models_dir: Path
     transcribed_files_dir: Path
 
     @property
@@ -232,7 +231,6 @@ def load_config(path: str | Path | None = None) -> Config:
     paths_raw = raw.get("paths", {})
     paths = PathsConfig(
         data_dir=_resolve(root, paths_raw.get("data_dir", "data")),
-        models_dir=_resolve(root, paths_raw.get("models_dir", "models")),
         transcribed_files_dir=_resolve(
             root, paths_raw.get("transcribed_files_dir", "yt-transcribed-files")
         ),

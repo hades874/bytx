@@ -437,18 +437,22 @@ def test_token_limit_fallback_depends_on_language(tmp_path):
 # --- TranscriberPool -------------------------------------------------------------
 
 def _pool_config(tmp_path, extra=""):
+    for key in ("bn-model", "multi"):  # local CTranslate2 folders, used as they are
+        (tmp_path / "models" / key).mkdir(parents=True)
+        (tmp_path / "models" / key / "model.bin").write_bytes(b"")
+    models = (tmp_path / "models").as_posix()
     (tmp_path / "config.toml").write_text(
-        """
+        f"""
 [asr]
 model = "bn-model"
 [asr.language_models]
 bn = "bn-model"
 en = "multi"
 [asr.models.bn-model]
-source = "org/bn"
+source = "{models}/bn-model"
 language = "bn"
 [asr.models.multi]
-source = "org/multi"
+source = "{models}/multi"
 language = ""
 """
         + extra,
@@ -471,7 +475,6 @@ def test_pool_reuses_the_loaded_model_for_the_same_key(tmp_path):
 
 def test_pool_unloads_the_previous_model_before_switching(tmp_path):
     cfg = _pool_config(tmp_path)
-    (cfg.paths.models_dir / "bn-model").mkdir(parents=True)
     pool = transcribe.TranscriberPool(cfg)
     bangla = pool.for_language("bn")
     _ = bangla.device  # load it
@@ -484,7 +487,6 @@ def test_pool_unloads_the_previous_model_before_switching(tmp_path):
 
 def test_pool_unload_drops_the_current_model(tmp_path):
     cfg = _pool_config(tmp_path)
-    (cfg.paths.models_dir / "multi").mkdir(parents=True)
     pool = transcribe.TranscriberPool(cfg)
     model = pool.for_language("en")
     _ = model.device

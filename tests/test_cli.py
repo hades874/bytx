@@ -185,39 +185,42 @@ def test_doctor_checks_each_configured_asr_model(config_path, monkeypatch):
     result = runner.invoke(cli.app, ["doctor", "--config", config_path])
 
     assert result.exit_code == 1  # models are not downloaded in the test dir
-    assert "ASR model 'bn-model' not found" in result.output
-    assert "ASR model 'multi' not found" in result.output
+    assert "ASR model 'bn-model' (org/bn) is not downloaded" in result.output
+    assert "ASR model 'multi' (org/multi) is not downloaded" in result.output
 
 
-def test_setup_converts_every_configured_model_then_pulls_ollama_models(config_path, monkeypatch):
-    calls = []
-
-    def fake_run(cmd, *args, **kwargs):
-        calls.append(cmd)
-        return _Done()
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+def test_setup_downloads_every_configured_model_then_pulls_ollama_models(config_path, tmp_path, monkeypatch):
+    downloaded, calls = [], []
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: downloaded.append(m.key) or tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
 
     result = runner.invoke(cli.app, ["setup", "--config", config_path])
 
     assert result.exit_code == 0, result.output
-    converted = [c[2] for c in calls if c[1].endswith("convert_model.py")]
-    assert converted == ["bn-model", "multi"]
+    assert downloaded == ["bn-model", "multi"]
     pulled = [c[2] for c in calls if c[:2] == ["ollama", "pull"]]
     assert pulled == ["bge-m3", "gemma3:4b"]
 
 
-def test_setup_stops_when_a_model_fails_to_install(config_path, monkeypatch):
-    class Failed:
-        returncode = 1
+def test_setup_stops_when_a_model_fails_to_download(config_path, monkeypatch):
+    def fail(model_cfg, force=False):
+        raise OSError("connection reset")
 
     calls = []
-    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or Failed())
+    monkeypatch.setattr(cli.models, "download", fail)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
 
     result = runner.invoke(cli.app, ["setup", "--config", config_path])
 
     assert result.exit_code == 1
-    assert len(calls) == 1  # did not go on to the next model or to Ollama
+    assert "connection reset" in result.output
+    assert calls == []  # did not go on to Ollama
+
+
+def test_setup_explains_that_an_unconverted_model_needs_the_convert_script(config_path):
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])  # bn-model is not already_ct2
+    assert result.exit_code == 1
+    assert "scripts/convert_model.py" in result.output
 
 
 # --- search output ----------------------------------------------------------------------
