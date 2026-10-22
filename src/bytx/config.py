@@ -1,4 +1,5 @@
-"""Loads config.toml into typed, dot-accessible config objects.
+"""Loads the settings into typed, dot-accessible config objects: the packaged
+defaults.toml with the user's config.toml merged over it.
 
 Kept deliberately dependency-free (stdlib tomllib only) so this module can be
 imported early, before any heavy ML libraries.
@@ -8,11 +9,13 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 
 from . import langs
 
 DEFAULT_CONFIG_FILENAME = "config.toml"
+DEFAULTS_FILENAME = "defaults.toml"
 
 
 @dataclass(frozen=True)
@@ -184,26 +187,41 @@ def _resolve(root: Path, raw: str) -> Path:
     return p if p.is_absolute() else (root / p)
 
 
+def _merge(base: dict, over: dict) -> dict:
+    """`over` on top of `base`: tables merge key by key, any other value replaces."""
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_defaults() -> dict:
+    """The packaged defaults.toml, as raw TOML data."""
+    return tomllib.loads((files(__package__) / DEFAULTS_FILENAME).read_text(encoding="utf-8"))
+
+
 def load_config(path: str | Path | None = None) -> Config:
-    """Load config.toml. Defaults to config.toml next to the project root
-    (found by walking up from cwd looking for pyproject.toml), falling back
-    to the current directory.
+    """Load the packaged defaults with the user's config.toml merged over them.
+    `path` names the user file (it must exist); otherwise it is config.toml
+    next to the project root (found by walking up from cwd looking for
+    pyproject.toml), and may be missing.
     """
     if path is not None:
         config_path = Path(path)
         root = config_path.parent
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found at {config_path}.")
     else:
         root = _find_project_root(Path.cwd())
         config_path = root / DEFAULT_CONFIG_FILENAME
 
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config file not found at {config_path}. "
-            "Copy config.toml from the project root or pass --config."
-        )
-
-    with config_path.open("rb") as f:
-        raw = tomllib.load(f)
+    raw = load_defaults()
+    if config_path.exists():
+        with config_path.open("rb") as f:
+            raw = _merge(raw, tomllib.load(f))
 
     paths_raw = raw.get("paths", {})
     paths = PathsConfig(

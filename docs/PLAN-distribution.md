@@ -78,7 +78,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 ## Release 1 (`0.2.0`): code
 
 ### T1a. Packaged defaults + deep merge
-- [ ] Done · **Needs:** nothing · **PRD:** R1.2
+- [x] Done · **Needs:** nothing · **PRD:** R1.2
 
 **Files:** `config.toml` → `src/bytx/defaults.toml` (`git mv`), `src/bytx/config.py`, `tests/test_config.py`, other tests that write partial configs.
 

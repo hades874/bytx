@@ -1,11 +1,13 @@
-# bytx configuration.
-# Paths are relative to the project root unless absolute.
+# bytx default settings, shipped inside the package. Don't edit this file:
+# put only the settings you change in config.toml in your data folder
+# (~/bytx, or $BYTX_HOME). Tables there merge into these; any other value
+# replaces the default. Paths are relative to the data folder unless absolute.
 
 [paths]
 data_dir = "data"
 models_dir = "models"
-# Human-browsable, git-tracked copies of transcripts, named "<channel> - <title>".
-# Separate from data/videos/<id>/, which is gitignored and DB-linked.
+# Human-browsable copies of transcripts, named "<channel> - <title>".
+# Separate from data/videos/<id>/, which is DB-linked.
 transcribed_files_dir = "yt-transcribed-files"
 
 [asr]

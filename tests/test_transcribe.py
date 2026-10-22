@@ -351,8 +351,9 @@ def test_find_split_point_stays_inside_the_clip_when_uniform():
 
 # --- config ---------------------------------------------------------------
 
-def test_shipped_config_has_clip_settings_and_fast_decoding_defaults():
-    cfg = load_config(Path(__file__).resolve().parents[1] / "config.toml")
+def test_shipped_config_has_clip_settings_and_fast_decoding_defaults(tmp_path):
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    cfg = load_config(tmp_path / "config.toml")
     assert cfg.asr.max_clip_seconds == 12
     assert cfg.asr.vad_threshold == 0.5
     assert cfg.asr.vad_speech_pad_ms == 400
