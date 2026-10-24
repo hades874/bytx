@@ -21,8 +21,22 @@ class ModelsMissing(RuntimeError):
 
 
 def _local_folder(model_cfg: AsrModelConfig) -> Path | None:
+    # Absolute only: config.py resolves a folder source, so a relative one is never cwd-dependent.
     folder = Path(model_cfg.source).expanduser()
-    return folder if folder.is_dir() else None
+    return folder if folder.is_absolute() and folder.is_dir() else None
+
+
+def _check_repo_id(model_cfg: AsrModelConfig) -> None:
+    """A `source` that is neither a folder here nor a repo id is a folder that isn't there."""
+    from huggingface_hub.utils import validate_repo_id
+
+    try:
+        validate_repo_id(model_cfg.source)
+    except ValueError as exc:  # HFValidationError
+        raise ModelsMissing(
+            f"ASR model {model_cfg.key!r}: {model_cfg.source} is not a folder on this machine "
+            "(nor a Hugging Face repo id). Fix its `source` in config.toml."
+        ) from exc
 
 
 def local_path(model_cfg: AsrModelConfig) -> Path:
@@ -36,6 +50,7 @@ def local_path(model_cfg: AsrModelConfig) -> Path:
                 "its `source` must be a CTranslate2 model folder."
             )
         return folder
+    _check_repo_id(model_cfg)
 
     from huggingface_hub import snapshot_download
 
@@ -55,6 +70,7 @@ def download(model_cfg: AsrModelConfig, force: bool = False) -> Path:
     download when it is already there, unless `force`."""
     if _local_folder(model_cfg) is not None:
         return local_path(model_cfg)
+    _check_repo_id(model_cfg)
     if not model_cfg.already_ct2:
         raise ValueError(
             f"ASR model {model_cfg.key!r} ({model_cfg.source}) is not a CTranslate2 model, so "

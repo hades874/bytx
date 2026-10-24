@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import logging
+import os
 import shutil
 import subprocess
 import sysconfig
@@ -134,9 +135,9 @@ def doctor(config: str | None = _config_option) -> None:
     ok = True
 
     settings = Path(config) if config else cfg.root / DEFAULT_CONFIG_FILENAME
-    console.print(f"Data folder: {cfg.root}")
+    console.print(f"Data folder: {escape(str(cfg.root))}")
     note = "" if settings.is_file() else " (not created: using the defaults)"
-    console.print(f"Settings:    {settings}{note}")
+    console.print(f"Settings:    {escape(str(settings))}{note}")
 
     from yt_dlp.version import __version__ as yt_dlp_version
 
@@ -155,7 +156,8 @@ def doctor(config: str | None = _config_option) -> None:
     if not gpu_extra and (gpu := _nvidia_gpu()):
         console.print(
             f"[yellow]TIP[/yellow]  {escape(gpu)} found, but this bytx runs on the CPU. For much faster "
-            + escape('transcription install the GPU version: uv tool install --reinstall "bytx[gpu]"')
+            "transcription install the GPU version: "
+            + escape('uv tool install --reinstall --python 3.12 "bytx[gpu]"')
         )
 
     from .transcribe import ModelLoadError, Transcriber
@@ -254,9 +256,19 @@ def setup(config: str | None = _config_option, force: bool = False) -> None:
             f"{_OLLAMA_OPTIONAL}[/yellow]"
         )
     else:
+        # The ollama command talks to $OLLAMA_HOST, so point it at the server checked above.
+        env = {**os.environ, "OLLAMA_HOST": cfg.ollama.host}
         for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
             console.print(f"[bold]Pulling Ollama model[/bold]: {model}")
-            proc = subprocess.run(["ollama", "pull", model])
+            try:
+                proc = subprocess.run(["ollama", "pull", model], env=env)
+            except FileNotFoundError:  # e.g. Ollama runs in Docker or on another machine
+                console.print(
+                    f"[yellow]Skipped the Q&A and summary models: Ollama runs at {cfg.ollama.host}, but "
+                    f"the `ollama` command isn't on PATH here. Where Ollama runs, run `ollama pull "
+                    f"{cfg.ollama.embed_model}` and `ollama pull {cfg.ollama.chat_model}`.[/yellow]"
+                )
+                break
             if proc.returncode != 0:
                 console.print(f"[red]Failed to pull {model}[/red]")
                 raise typer.Exit(1)
@@ -567,8 +579,8 @@ def remove(
     lang = escape(f"[{v.language}]") if v and v.language else ""
     console.print(f"video {video_id}: {escape(v.title or v.url) if v else '(not in the database)'}  {lang}")
     console.print(f"  database row:     {'yes' if v else 'no'}")
-    console.print(f"  data folder:      {removal.data_dir or 'none'}")
-    console.print(f"  transcript copy:  {removal.shared_folder or 'none'}")
+    console.print(f"  data folder:      {escape(str(removal.data_dir or 'none'))}")
+    console.print(f"  transcript copy:  {escape(str(removal.shared_folder or 'none'))}")
     console.print(f"  ledger entry:     {'yes' if removal.ledger_entry else 'no'}")
     if not yes:
         console.print("Dry run: nothing was deleted. Run again with --yes to delete the above.")

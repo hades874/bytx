@@ -186,6 +186,13 @@ def _resolve(root: Path, raw: str) -> Path:
     return p if p.is_absolute() else (root / p)
 
 
+def _model_source(root: Path, raw: str) -> str:
+    """A model's `source`: a folder (relative to the data folder unless absolute)
+    as its full path, else unchanged, as a Hugging Face repo id."""
+    folder = root / Path(raw).expanduser()  # an absolute path replaces root
+    return str(folder) if folder.is_dir() else raw
+
+
 def _merge(base: dict, over: dict) -> dict:
     """`over` on top of `base`: tables merge key by key, any other value replaces."""
     merged = dict(base)
@@ -241,7 +248,7 @@ def load_config(path: str | Path | None = None) -> Config:
     models = {
         key: AsrModelConfig(
             key=key,
-            source=m["source"],
+            source=_model_source(root, m["source"]),
             language=m.get("language", langs.BANGLA),
             already_ct2=m.get("already_ct2", False),
             max_clip_seconds=m.get("max_clip_seconds"),

@@ -208,16 +208,34 @@ def test_doctor_checks_each_configured_asr_model(config_path, monkeypatch):
 
 def test_setup_downloads_every_configured_model_then_pulls_ollama_models(config_path, tmp_path, monkeypatch):
     downloaded, calls = [], []
+    monkeypatch.setenv("OLLAMA_HOST", "http://elsewhere:1")  # the configured host wins
     monkeypatch.setattr(cli, "OllamaClient", _RunningOllama)
     monkeypatch.setattr(cli.models, "download", lambda m, force=False: downloaded.append(m.key) or tmp_path)
-    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda cmd, env=None, **k: calls.append((cmd, env["OLLAMA_HOST"])) or _Done()
+    )
 
     result = runner.invoke(cli.app, ["setup", "--config", config_path])
 
     assert result.exit_code == 0, result.output
     assert downloaded == ["bn-model", "multi"]
-    pulled = [c[2] for c in calls if c[:2] == ["ollama", "pull"]]
-    assert pulled == ["bge-m3", "gemma3:4b"]
+    host = "http://127.0.0.1:11434"
+    assert calls == [(["ollama", "pull", "bge-m3"], host), (["ollama", "pull", "gemma3:4b"], host)]
+
+
+def test_setup_without_the_ollama_command_says_where_to_pull_and_succeeds(config_path, tmp_path, monkeypatch):
+    def no_ollama_command(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(cli, "OllamaClient", _RunningOllama)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", no_ollama_command)
+
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "`ollama pull bge-m3`" in output and "Setup complete" in output
 
 
 def test_setup_says_how_much_it_will_download_first(config_path, tmp_path, monkeypatch):
@@ -358,7 +376,7 @@ def test_doctor_suggests_the_gpu_version_for_an_unused_nvidia_gpu(config_path, m
     monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/bin/{tool}")
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
     output = " ".join(runner.invoke(cli.app, ["doctor", "--config", config_path]).output.split())
-    assert "RTX 4070" in output and 'uv tool install --reinstall "bytx[gpu]"' in output
+    assert "RTX 4070" in output and 'uv tool install --reinstall --python 3.12 "bytx[gpu]"' in output
 
 
 def test_doctor_gives_no_gpu_tip_when_the_gpu_version_is_installed(config_path, monkeypatch):
@@ -674,6 +692,18 @@ def test_remove_with_yes_deletes_the_video(config_path, tmp_path):
     assert result.exit_code == 0, result.output
     assert "Removed aaaaaaaaaaa" in result.output
     assert db(tmp_path).execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
+
+
+def test_remove_and_doctor_print_bracketed_paths_as_they_are(tmp_path, monkeypatch):
+    home = tmp_path / "lib [bangla]"  # rich would read "[bangla]" as a style tag and drop it
+    (home / "data" / "videos" / "aaaaaaaaaaa").mkdir(parents=True)
+    (home / "config.toml").write_text(_CONFIG, encoding="utf-8")
+    _transcribed(home, "aaaaaaaaaaa", "hello")
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+
+    for args in (["remove", "aaaaaaaaaaa"], ["doctor"]):
+        result = runner.invoke(cli.app, [*args, "--config", str(home / "config.toml")])
+        assert "[bangla]" in result.output, args
 
 
 @pytest.mark.parametrize(("video_id", "message"), [("zzzzzzzzzzz", "No such video"), ("..", "is not a video id")])

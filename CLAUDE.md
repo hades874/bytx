@@ -20,7 +20,7 @@ uv tool install --editable ".[gpu]"   # an installed `bytx` on PATH that runs th
 
 Daily use goes through the installed `bytx`, like any user's: `bytx setup` downloads the ASR models into the Hugging Face cache and pulls Ollama models if Ollama runs; `bytx doctor` checks the data folder, Deno, models, GPU and Ollama.
 
-Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings: the packaged `src/bytx/defaults.toml`, with the user's `config.toml` from the data folder deep-merged over it (`config.py`). The data folder is `$BYTX_HOME`, else `~/bytx`; `--config <file>` makes that file's folder the data folder. ASR models are found and downloaded only through `models.py` (a local CTranslate2 folder as `source`, or the HF cache).
+Entry point is `bytx = "bytx:main"` (`cli.py`, Typer). Settings: the packaged `src/bytx/defaults.toml`, with the user's `config.toml` from the data folder deep-merged over it (`config.py`). The data folder is `$BYTX_HOME`, else `~/bytx`; `--config <file>` makes that file's folder the data folder. ASR models are found and downloaded only through `models.py` (a local CTranslate2 folder as `source`, relative to the data folder unless absolute, or the HF cache).
 
 ## Transcribing videos
 

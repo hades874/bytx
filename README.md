@@ -43,11 +43,11 @@ the JavaScript runtime YouTube needs (Deno), and audio is decoded without
 ffmpeg.
 
 ```
-uv tool install bytx              # any OS; transcribes on the CPU
-uv tool install "bytx[gpu]"       # Windows or Linux with an NVIDIA GPU: adds the CUDA libraries (about 1.3 GB)
+uv tool install --python 3.12 bytx         # any OS; transcribes on the CPU
+uv tool install --python 3.12 "bytx[gpu]"  # Windows or Linux with an NVIDIA GPU: adds the CUDA libraries (about 1.3 GB)
 
-bytx setup                        # downloads the speech models once
-bytx doctor                       # checks everything is ready
+bytx setup                                 # downloads the speech models once
+bytx doctor                                # checks everything is ready
 bytx add "https://www.youtube.com/watch?v=XXXXXXXXXXX" --lang bn --run
 ```
 
@@ -303,7 +303,9 @@ uv tool install --editable ".[gpu]"   # a `bytx` on PATH that runs your working 
 `bytx bench --clip` compares models on part of a video and needs
 [ffmpeg](https://ffmpeg.org/download.html) on PATH (nothing else in bytx
 does). `scripts/convert_model.py` converts a Hugging Face Whisper checkpoint
-to CTranslate2; it needs `uv sync --extra convert` (transformers + torch).
+to CTranslate2; it needs `uv sync --extra convert` (transformers + torch). To
+use the result, set the model's `source` in `config.toml` to the output folder
+(relative to the data folder unless absolute).
 
 Contributions and issues are welcome — open a PR or an issue.
 

@@ -79,8 +79,9 @@ glossary_prompt_max_chars = 300
 bn = "tugstugi-medium-bn"
 en = "large-v3-turbo"
 
-# `language` pins a model to one language; "" means multilingual (the
-# language is chosen per video).
+# `source` is a Hugging Face repo id or a CTranslate2 model folder (relative to
+# the data folder unless absolute). `language` pins a model to one language;
+# "" means multilingual (the language is chosen per video).
 [asr.models.tugstugi-medium-bn]
 source = "bengaliAI/tugstugi_bengaliai-asr_whisper-medium"
 language = "bn"

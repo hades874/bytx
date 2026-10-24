@@ -21,7 +21,7 @@ The PRD says *what* and *why*. This file splits it into tasks that are each abou
 These are the decisions the PRD left open. Don't re-open them without the maintainer.
 
 - **ASR models live in the Hugging Face cache, not in `~/bytx`.** `HF_HOME` moves the cache. `paths.models_dir` is deleted. A new module, `src/bytx/models.py`, is the only code that knows where models are:
-  - `local_path(model_cfg) -> Path`. If `source` is an existing folder it is used as it is (a converted or maintainer model). Otherwise it calls `snapshot_download(source, local_files_only=True)` and checks that `model.bin` exists. Raises `ModelsMissing` with "run `bytx setup`".
+  - `local_path(model_cfg) -> Path`. If `source` is an existing folder it is used as it is (a converted or maintainer model). `config.py` resolves a relative folder against the data folder, never the current folder. Otherwise `source` must be a valid repo id (else `ModelsMissing`: "fix its `source`"), and it calls `snapshot_download(source, local_files_only=True)` and checks that `model.bin` exists. Raises `ModelsMissing` with "run `bytx setup`".
   - `download(model_cfg, force=False) -> Path`. This is the `already_ct2` branch of `scripts/convert_model.py:convert_or_download`, moved into the package. A Hugging Face source that is not CTranslate2 raises a clear error: "convert it with scripts/convert_model.py and set `source` to the output folder".
   - `missing(cfg) -> list[str]`: the configured model keys that are not downloaded.
 - **Data folder layout.** `Config.root` is the data folder, so everything that resolves against it (ledger, glossary, paths) moves with it:
@@ -286,6 +286,18 @@ Add `[project.urls]`, `classifiers` and `keywords` to pyproject.
 - Run `git rm --cached env.ps1 urls.txt glossary.txt` and add those three files to `.gitignore`. The local copies stay until T11.
 
 **Done when:** a README-only walkthrough reaches a transcript. That is checked for real in T10.
+
+### R1 review fixes
+- [x] Done (2026-10-25) · **Needs:** T1a–T9 · **PRD:** R1.3, R1.4, R1.6
+
+Fixes from reviewing the release 1 code:
+- A relative folder `source` resolves against the data folder (`config._model_source`), so it never depends on the current folder. A `source` that is neither a folder nor a valid repo id raises `ModelsMissing` ("fix its `source`") instead of a Hugging Face validation error.
+- `setup` runs `ollama pull` with `OLLAMA_HOST` set to `ollama.host`, so it pulls into the server it just checked. If the `ollama` command isn't on PATH (Ollama in Docker or on another machine), it prints the two pull commands to run there and still succeeds.
+- `ledger.remove_entry` writes a temporary copy and swaps it in, so a crash mid-write can't lose the ledger.
+- `doctor` and `remove` escape paths, so rich doesn't drop a `[bangla]` in a folder name.
+- The install commands (README, `docs/README.bn.md`, the `doctor` GPU tip) pin `--python 3.12`, as the CI smoke job does.
+
+**Tests:** one or more per fix in `test_config.py`, `test_models.py`, `test_ledger.py` and `test_cli.py`. Full suite: 547 passed, ruff clean.
 
 ## Release 1: maintainer-gated
 

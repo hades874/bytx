@@ -49,6 +49,20 @@ def test_a_local_folder_without_a_model_is_reported(tmp_path, hf_cache):
         models.local_path(model_cfg(tmp_path / "empty"))
 
 
+def test_a_relative_source_is_never_looked_up_in_the_current_folder(tmp_path, hf_cache, monkeypatch):
+    ct2_folder(tmp_path / "org" / "repo")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(models.ModelsMissing, match="is not downloaded"):
+        models.local_path(model_cfg("org/repo"))
+
+
+def test_a_folder_source_that_is_not_there_says_to_fix_it(tmp_path, hf_cache):
+    nowhere = model_cfg(tmp_path / "nowhere", already_ct2=False)
+    for find in (models.local_path, models.download):
+        with pytest.raises(models.ModelsMissing, match="is not a folder on this machine"):
+            find(nowhere)
+
+
 def test_a_cached_repo_resolves_to_its_snapshot(tmp_path, hf_cache):
     cache, downloads = hf_cache
     cache["org/m"] = ct2_folder(tmp_path / "snap")

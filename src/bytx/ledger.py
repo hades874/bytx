@@ -65,7 +65,10 @@ def remove_entry(path: Path, video_id: str) -> bool:
     if video_id not in load_seen_ids(path):
         return False
     text = path.read_text(encoding="utf-8")
-    path.write_text(
+    # Write a copy, then swap it in: a crash mid-write must not lose the whole ledger.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
         _ENTRY_RE.sub(lambda m: "" if m.group(1) == video_id else m.group(0), text), encoding="utf-8"
     )
+    tmp.replace(path)
     return True

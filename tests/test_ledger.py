@@ -107,6 +107,7 @@ def test_remove_entry_deletes_only_that_video(tmp_path):
     assert ledger.load_seen_ids(path) == {"aaa", "ccc"}
     text = path.read_text(encoding="utf-8")
     assert "youtu.be/bbb" not in text and "youtu.be/ccc" in text
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]  # no temp copy left behind
     ledger.append_entry(path, make_video(id="bbb", url="https://youtu.be/bbb"))  # can be recorded again
     assert ledger.load_seen_ids(path) == {"aaa", "bbb", "ccc"}
 

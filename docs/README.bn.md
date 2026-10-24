@@ -16,8 +16,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 ২. bytx ইনস্টল করুন (নতুন টার্মিনাল খুলে):
 
 ```
-uv tool install bytx              # যেকোনো কম্পিউটারে; CPU-তে চলে
-uv tool install "bytx[gpu]"       # NVIDIA GPU থাকলে (উইন্ডোজ বা লিনাক্স); প্রায় ১.৩ GB বেশি ডাউনলোড
+uv tool install --python 3.12 bytx         # যেকোনো কম্পিউটারে; CPU-তে চলে
+uv tool install --python 3.12 "bytx[gpu]"  # NVIDIA GPU থাকলে (উইন্ডোজ বা লিনাক্স); প্রায় ১.৩ GB বেশি ডাউনলোড
 ```
 
 ৩. স্পিচ মডেল নামান আর সব ঠিক আছে কিনা দেখুন:

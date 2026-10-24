@@ -58,6 +58,13 @@ def test_a_user_model_is_added_next_to_the_default_ones(tmp_path):
     assert cfg.asr.model_for_language("bn").key == "tugstugi-medium-bn"  # untouched default
 
 
+def test_a_model_folder_source_is_relative_to_the_data_folder(tmp_path):
+    (tmp_path / "models" / "mine").mkdir(parents=True)
+    cfg = write_config(tmp_path, '[asr.models.mine]\nsource = "models/mine"\n[asr.models.hub]\nsource = "org/hub"\n')
+    assert cfg.asr.models["mine"].source == str(tmp_path / "models" / "mine")
+    assert cfg.asr.models["hub"].source == "org/hub"  # no such folder: a Hugging Face repo id
+
+
 def test_defaults_are_packaged_with_bytx():
     assert load_defaults()["asr"]["default_language"] == "bn"
 
