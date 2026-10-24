@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import logging
+import os
+import shutil
 import subprocess
-import sys
+import sysconfig
 from pathlib import Path
 
 import typer
@@ -14,8 +17,8 @@ from rich.markup import escape
 from rich.table import Table
 
 from . import compare as compare_module
-from . import export, fetch, langs, pipeline, platforms, quality, rag, store
-from .config import Config, load_config
+from . import export, fetch, langs, models, pipeline, platforms, quality, rag, store
+from .config import DEFAULT_CONFIG_FILENAME, Config, load_config
 from .cuda_dll import ensure_cuda_dll_paths
 from .llm import OllamaClient, OllamaError
 from .textio import configure_utf8_io
@@ -25,7 +28,11 @@ configure_utf8_io()
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
 
-_config_option = typer.Option(None, "--config", help="Path to config.toml (default: project root)")
+_config_option = typer.Option(
+    None, "--config",
+    help="Path to a config.toml with your overrides; its folder is the data folder "
+    "(default: ~/bytx, or $BYTX_HOME)",
+)
 
 
 def _load(config_path: str | None) -> Config:
@@ -40,6 +47,22 @@ def _load(config_path: str | None) -> Config:
 
 def _conn(cfg: Config):
     return store.connect(cfg.paths.db_path)
+
+
+_OLLAMA_OPTIONAL = "It's optional: install it from https://ollama.com (or start it), then run `bytx setup`."
+
+
+def _ollama_client(cfg: Config) -> OllamaClient:
+    """A client for a running Ollama, or exit with how to get one."""
+    client = OllamaClient(cfg.ollama)
+    if not client.is_reachable():
+        client.close()
+        console.print(
+            f"[yellow]This needs Ollama, which isn't running at {cfg.ollama.host}. "
+            f"{_OLLAMA_OPTIONAL}[/yellow]"
+        )
+        raise typer.Exit(1)
+    return client
 
 
 _LANG_CHOICES = ", ".join(langs.SUPPORTED)
@@ -79,29 +102,63 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+def _deno_path() -> str | None:
+    """Where yt-dlp finds Deno (its JS runtime for YouTube): the Python
+    environment's scripts folder, where yt-dlp[deno] puts it, else PATH."""
+    bundled = Path(sysconfig.get_path("scripts")) / ("deno" + (sysconfig.get_config_var("EXE") or ""))
+    return str(bundled) if bundled.is_file() else shutil.which("deno")
+
+
+def _gpu_extra_installed() -> bool:
+    try:
+        return importlib.util.find_spec("nvidia.cublas") is not None
+    except ModuleNotFoundError:  # no `nvidia` package at all
+        return False
+
+
+def _nvidia_gpu() -> str | None:
+    """The first NVIDIA GPU nvidia-smi lists, if any."""
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        proc = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    gpus = [line for line in proc.stdout.splitlines() if line.startswith("GPU ")]
+    return gpus[0] if proc.returncode == 0 and gpus else None
+
+
 @app.command()
 def doctor(config: str | None = _config_option) -> None:
-    """Check that ffmpeg, yt-dlp, the ASR model, and Ollama are ready."""
+    """Check that downloads, the ASR models, the GPU and (optionally) Ollama are ready."""
     cfg = _load(config)
     ok = True
 
-    import shutil
+    settings = Path(config) if config else cfg.root / DEFAULT_CONFIG_FILENAME
+    console.print(f"Data folder: {escape(str(cfg.root))}")
+    note = "" if settings.is_file() else " (not created: using the defaults)"
+    console.print(f"Settings:    {escape(str(settings))}{note}")
 
-    # deno is the JS runtime yt-dlp needs for YouTube only; Facebook works without it.
-    for tool, note in (("ffmpeg", ""), ("deno", " (needed for YouTube; Facebook works without it)")):
-        path = shutil.which(tool)
-        if path:
-            console.print(f"[green]OK[/green]  {tool}: {path}")
-        else:
-            console.print(f"[red]MISSING[/red]  {tool} not found on PATH{note}")
-            ok = False
+    from yt_dlp.version import __version__ as yt_dlp_version
 
-    try:
-        proc = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=15)
-        console.print(f"[green]OK[/green]  yt-dlp: {proc.stdout.strip()}")
-    except Exception as exc:
-        console.print(f"[red]MISSING[/red]  yt-dlp: {exc}")
+    console.print(f"[green]OK[/green]  yt-dlp: {yt_dlp_version}")
+    deno = _deno_path()
+    if deno:
+        console.print(f"[green]OK[/green]  deno: {deno}")
+    else:
+        console.print(
+            "[red]MISSING[/red]  deno, which YouTube downloads need (Facebook works without it). "
+            "Reinstall bytx: it ships Deno."
+        )
         ok = False
+
+    gpu_extra = _gpu_extra_installed()
+    if not gpu_extra and (gpu := _nvidia_gpu()):
+        console.print(
+            f"[yellow]TIP[/yellow]  {escape(gpu)} found, but this bytx runs on the CPU. For much faster "
+            "transcription install the GPU version: "
+            + escape('uv tool install --reinstall --python 3.12 "bytx[gpu]"')
+        )
 
     from .transcribe import ModelLoadError, Transcriber
 
@@ -113,12 +170,10 @@ def doctor(config: str | None = _config_option) -> None:
         raise typer.Exit(1) from exc
 
     for key in model_keys:
-        model_dir = cfg.paths.models_dir / key
-        if not model_dir.exists():
-            console.print(
-                f"[yellow]MISSING[/yellow]  ASR model '{key}' not found at {model_dir}. "
-                f"Run `bytx setup`."
-            )
+        try:
+            model_dir = models.local_path(cfg.asr.models[key])
+        except models.ModelsMissing as exc:
+            console.print(f"[yellow]MISSING[/yellow]  {escape(str(exc))}")
             ok = False
             continue
         console.print(f"[green]OK[/green]  ASR model '{key}' present at {model_dir}")
@@ -128,7 +183,9 @@ def doctor(config: str | None = _config_option) -> None:
             console.print(
                 f"[green]OK[/green]  ASR '{key}' loads on device={device} compute_type={compute_type}"
             )
-            if device != "cuda" or compute_type != cfg.asr.compute_type:
+            # Without the gpu extra the CPU is expected, not a fallback.
+            wanted = ("cuda", cfg.asr.compute_type)
+            if gpu_extra and cfg.asr.device != "cpu" and (device, compute_type) != wanted:
                 console.print(
                     f"  [yellow]note:[/yellow] fell back from cuda/{cfg.asr.compute_type} "
                     f"(see logs with -v for why)"
@@ -138,22 +195,25 @@ def doctor(config: str | None = _config_option) -> None:
             console.print(f"[red]FAIL[/red]  ASR model '{key}' failed to load: {escape(str(exc))}")
             ok = False
 
+    # Ollama only powers search by meaning, Q&A and summaries, so it never fails the check.
     try:
         with OllamaClient(cfg.ollama) as client:
             if not client.is_reachable():
-                console.print(f"[red]FAIL[/red]  Ollama not reachable at {cfg.ollama.host}")
-                ok = False
+                console.print(
+                    f"[yellow]WARN[/yellow]  Ollama not reachable at {cfg.ollama.host} (needed only for "
+                    f"search by meaning, Q&A and summaries). {_OLLAMA_OPTIONAL}"
+                )
             else:
                 console.print(f"[green]OK[/green]  Ollama reachable at {cfg.ollama.host}")
                 for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
                     if client.has_model(model):
                         console.print(f"[green]OK[/green]  Ollama model '{model}' present")
                     else:
-                        console.print(f"[yellow]MISSING[/yellow]  Ollama model '{model}'. Run `bytx setup`.")
-                        ok = False
+                        console.print(
+                            f"[yellow]WARN[/yellow]  Ollama model '{model}' missing. Run `bytx setup`."
+                        )
     except OllamaError as exc:
-        console.print(f"[red]FAIL[/red]  Ollama check failed: {exc}")
-        ok = False
+        console.print(f"[yellow]WARN[/yellow]  Ollama check failed: {exc}")
 
     if not ok:
         raise typer.Exit(1)
@@ -162,10 +222,8 @@ def doctor(config: str | None = _config_option) -> None:
 
 @app.command()
 def setup(config: str | None = _config_option, force: bool = False) -> None:
-    """Convert/download every configured ASR model and pull Ollama models."""
+    """Download every configured ASR model and pull the Ollama models."""
     cfg = _load(config)
-    scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
-    convert_script = scripts_dir / "convert_model.py"
 
     try:
         cfg.asr.active_model()
@@ -174,25 +232,46 @@ def setup(config: str | None = _config_option, force: bool = False) -> None:
         console.print(f"[red]Config error:[/red] {escape(str(exc))}")
         raise typer.Exit(1) from exc
 
+    to_fetch = model_keys if force else models.missing(cfg)
+    sizes = {key: models.download_size(cfg.asr.models[key]) for key in to_fetch}
+    if any(sizes.values()):
+        listed = ", ".join(f"{key} ({size / 1e9:.1f} GB)" for key, size in sizes.items() if size)
+        total = sum(size for size in sizes.values() if size)
+        console.print(f"Downloading {total / 1e9:.1f} GB of speech models: {listed}")
+
     for key in model_keys:
         console.print(f"[bold]Setting up ASR model[/bold]: {key}")
-        cmd = [sys.executable, str(convert_script), key]
-        if force:
-            cmd.append("--force")
-        if config:
-            cmd.extend(["--config", config])
-        proc = subprocess.run(cmd)
-        if proc.returncode != 0:
-            console.print("[red]Model setup failed.[/red] If this is the first run, install the 'convert' "
-                           "extra: uv sync --extra convert")
-            raise typer.Exit(1)
+        try:
+            path = models.download(cfg.asr.models[key], force=force)
+        except Exception as exc:  # noqa: BLE001 - config, network and Hugging Face errors
+            console.print(f"[red]Model setup failed:[/red] {escape(str(exc))}")
+            raise typer.Exit(1) from exc
+        console.print(f"[green]OK[/green]  {key}: {path}")
 
-    for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
-        console.print(f"[bold]Pulling Ollama model[/bold]: {model}")
-        proc = subprocess.run(["ollama", "pull", model])
-        if proc.returncode != 0:
-            console.print(f"[red]Failed to pull {model}[/red]")
-            raise typer.Exit(1)
+    with OllamaClient(cfg.ollama) as client:
+        ollama_running = client.is_reachable()
+    if not ollama_running:
+        console.print(
+            f"[yellow]Skipped the Q&A and summary models: Ollama isn't running at {cfg.ollama.host}. "
+            f"{_OLLAMA_OPTIONAL}[/yellow]"
+        )
+    else:
+        # The ollama command talks to $OLLAMA_HOST, so point it at the server checked above.
+        env = {**os.environ, "OLLAMA_HOST": cfg.ollama.host}
+        for model in (cfg.ollama.embed_model, cfg.ollama.chat_model):
+            console.print(f"[bold]Pulling Ollama model[/bold]: {model}")
+            try:
+                proc = subprocess.run(["ollama", "pull", model], env=env)
+            except FileNotFoundError:  # e.g. Ollama runs in Docker or on another machine
+                console.print(
+                    f"[yellow]Skipped the Q&A and summary models: Ollama runs at {cfg.ollama.host}, but "
+                    f"the `ollama` command isn't on PATH here. Where Ollama runs, run `ollama pull "
+                    f"{cfg.ollama.embed_model}` and `ollama pull {cfg.ollama.chat_model}`.[/yellow]"
+                )
+                break
+            if proc.returncode != 0:
+                console.print(f"[red]Failed to pull {model}[/red]")
+                raise typer.Exit(1)
 
     console.print("[bold green]Setup complete.[/bold green] Run `bytx doctor` to verify.")
 
@@ -245,12 +324,18 @@ def run(
 
 def _do_run(conn, cfg: Config, limit: int | None, summarize_enabled: bool | None = None) -> None:
     ensure_cuda_dll_paths()
-    result = pipeline.run(conn, cfg, limit=limit, summarize_enabled=summarize_enabled)
+    try:
+        result = pipeline.run(conn, cfg, limit=limit, summarize_enabled=summarize_enabled)
+    except models.ModelsMissing as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
     detected = f"language-detected={result.detected} " if result.detected else ""
     console.print(
         f"[bold]Done.[/bold] {detected}transcribed={result.transcribed} indexed={result.indexed} "
         f"summarized={result.summarized} failed={result.failed}"
     )
+    if result.stopped:
+        console.print(f"[yellow]{escape(result.stopped)}[/yellow]")
     if result.failed:
         console.print(
             "[yellow]Some videos failed. Run `bytx status` for details, "
@@ -382,7 +467,7 @@ def search(
 
     if semantic:
         try:
-            with OllamaClient(cfg.ollama) as client:
+            with _ollama_client(cfg) as client:
                 hits = rag.semantic_search(conn, client, cfg, query, top_k=limit, channel=channel)
         except OllamaError as exc:
             console.print(f"[red]{exc}[/red]")
@@ -416,7 +501,7 @@ def ask(
     cfg = _load(config)
     conn = _conn(cfg)
     try:
-        with OllamaClient(cfg.ollama) as client:
+        with _ollama_client(cfg) as client:
             answer, hits = rag.ask(conn, client, cfg, question, video_id=video)
     except OllamaError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -452,7 +537,7 @@ def summarize(
         targets = [v]
 
     try:
-        with OllamaClient(cfg.ollama) as client:
+        with _ollama_client(cfg) as client:
             for v in targets:
                 pipeline.summarize_one(conn, cfg, client, v)
                 console.print(f"[green]Summarized[/green] {v.id}")
@@ -468,6 +553,40 @@ def retry(config: str | None = _config_option) -> None:
     conn = _conn(cfg)
     count = pipeline.retry_failed(conn)
     console.print(f"Requeued {count} failed video(s).")
+
+
+@app.command()
+def remove(
+    video_id: str,
+    yes: bool = typer.Option(False, "--yes", help="Delete (default: only list what would be deleted)"),
+    config: str | None = _config_option,
+) -> None:
+    """Remove a video completely, so it can be added again (e.g. with the right --lang)."""
+    cfg = _load(config)
+    conn = _conn(cfg)
+    try:
+        removal = pipeline.remove_video(conn, cfg, video_id)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    if removal.empty:
+        console.print(
+            f"[red]No such video: {escape(video_id)}[/red] (not in the library, its folders or the ledger)"
+        )
+        raise typer.Exit(1)
+
+    v = removal.video
+    lang = escape(f"[{v.language}]") if v and v.language else ""
+    console.print(f"video {video_id}: {escape(v.title or v.url) if v else '(not in the database)'}  {lang}")
+    console.print(f"  database row:     {'yes' if v else 'no'}")
+    console.print(f"  data folder:      {escape(str(removal.data_dir or 'none'))}")
+    console.print(f"  transcript copy:  {escape(str(removal.shared_folder or 'none'))}")
+    console.print(f"  ledger entry:     {'yes' if removal.ledger_entry else 'no'}")
+    if not yes:
+        console.print("Dry run: nothing was deleted. Run again with --yes to delete the above.")
+        return
+    pipeline.remove_video(conn, cfg, video_id, apply=True)
+    console.print(f"[green]Removed {video_id}.[/green] Re-add it with `bytx add <url> --lang bn|en`.")
 
 
 @app.command(name="quality")
@@ -681,7 +800,9 @@ def bench(
     models: str | None = typer.Option(
         None, help="Comma-separated model keys to compare (default: config's model)"
     ),
-    clip: str | None = typer.Option(None, help="mm:ss-mm:ss range to clip before transcribing"),
+    clip: str | None = typer.Option(
+        None, help="mm:ss-mm:ss range to clip before transcribing (needs ffmpeg on PATH)"
+    ),
     ref: str | None = typer.Option(None, help="Reference transcript file for WER/CER scoring"),
     lang: str | None = typer.Option(
         None, "--lang",
@@ -693,6 +814,9 @@ def bench(
     from . import bench as bench_module
 
     language = _parse_lang(lang)
+    if clip and shutil.which("ffmpeg") is None:  # the only part of bytx that needs ffmpeg
+        console.print("[red]--clip needs ffmpeg on PATH[/red] (https://ffmpeg.org/download.html).")
+        raise typer.Exit(1)
     cfg = _load(config)
     model_keys = models.split(",") if models else [cfg.asr.model]
     bench_module.run_bench(

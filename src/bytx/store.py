@@ -256,6 +256,12 @@ def get_video(conn: sqlite3.Connection, video_id: str) -> Video | None:
     return Video.from_row(row) if row else None
 
 
+def delete_video(conn: sqlite3.Connection, video_id: str) -> None:
+    """Deletes a video; its segments, chunks and summary go with it (ON DELETE CASCADE)."""
+    with transaction(conn):
+        conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+
+
 def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
     row = conn.execute("SELECT 1 FROM videos WHERE id = ?", (video_id,)).fetchone()
     return row is not None

@@ -41,7 +41,7 @@ def make_config() -> Config:
     return Config(
         root=Path("."),
         paths=PathsConfig(
-            data_dir=Path("data"), models_dir=Path("models"),
+            data_dir=Path("data"),
             transcribed_files_dir=Path("yt-transcribed-files"),
         ),
         asr=AsrConfig(

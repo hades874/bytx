@@ -26,13 +26,15 @@ of truth. `reexport` rebuilds all of those files from the database.
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import export, fetch, langdetect, langs, ledger, platforms, quality, rag, store, summarize
+from . import export, fetch, langdetect, langs, ledger, models, platforms, quality, rag, store, summarize
 from . import glossary as glossary_mod
 from .config import Config
-from .llm import OllamaClient
+from .llm import OllamaClient, OllamaError
 from .transcribe import TranscriberPool, TranscribeStats
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,8 @@ class RunSummary:
     indexed: int = 0
     summarized: int = 0
     failed: int = 0
+    # Why the run stopped before indexing/summarizing (Ollama missing), if it did.
+    stopped: str | None = None
 
 
 AUTO = "auto"  # add_targets(language=AUTO): decide each video's language at run time
@@ -265,6 +269,9 @@ def _run_stage(
 
 
 def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | None = None) -> RunSummary:
+    """Processes the queue. Raises models.ModelsMissing, before touching any
+    video, when there is something to transcribe but `bytx setup` hasn't
+    downloaded the ASR models: videos would otherwise all end up `failed`."""
     result = RunSummary()
     should_summarize = cfg.summarize.enabled if summarize_enabled is None else summarize_enabled
 
@@ -272,6 +279,11 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
     if limit is not None:
         queued = queued[:limit]
     if queued:
+        absent = models.missing(cfg)
+        if absent:
+            raise models.ModelsMissing(
+                f"ASR model(s) not downloaded yet: {', '.join(absent)}. Run `bytx setup`."
+            )
         pool = TranscriberPool(cfg)
         # Audio downloaded while detecting a language, kept for the transcription.
         detected_audio: dict[str, Path] = {}
@@ -301,25 +313,44 @@ def run(conn, cfg: Config, limit: int | None = None, summarize_enabled: bool | N
             pool.unload()
 
     to_index = store.list_videos(conn, status="transcribed")
-    if to_index:
-        with OllamaClient(cfg.ollama) as client:
+    if not to_index and not (should_summarize and store.list_videos(conn, status="indexed")):
+        return result
+    # Ollama is optional: without it, transcripts stay `transcribed` (not failed)
+    # and a later run picks them up.
+    with OllamaClient(cfg.ollama) as client:
+        result.stopped = _ollama_problem(client, cfg, should_summarize)
+        if result.stopped:
+            return result
+        _run_stage(
+            conn, to_index, "index",
+            lambda v: index_one(conn, cfg, client, v),
+            result, "indexed",
+        )
+        if should_summarize:
             _run_stage(
-                conn, to_index, "index",
-                lambda v: index_one(conn, cfg, client, v),
-                result, "indexed",
+                conn, store.list_videos(conn, status="indexed"), "summarize",
+                lambda v: summarize_one(conn, cfg, client, v),
+                result, "summarized",
             )
 
-    if should_summarize:
-        to_summarize = store.list_videos(conn, status="indexed")
-        if to_summarize:
-            with OllamaClient(cfg.ollama) as client:
-                _run_stage(
-                    conn, to_summarize, "summarize",
-                    lambda v: summarize_one(conn, cfg, client, v),
-                    result, "summarized",
-                )
-
     return result
+
+
+def _ollama_problem(client: OllamaClient, cfg: Config, summarize: bool) -> str | None:
+    """Why indexing/summarizing can't run now, or None if it can."""
+    if not client.is_reachable():
+        return (
+            f"Ollama (optional) isn't running at {cfg.ollama.host}: transcripts are saved, but search "
+            "by meaning, Q&A and summaries wait until you start it and run `bytx run` again."
+        )
+    needed = [cfg.ollama.embed_model] + ([cfg.ollama.chat_model] if summarize else [])
+    try:
+        absent = [m for m in needed if not client.has_model(m)]
+    except OllamaError as exc:
+        return str(exc)
+    if absent:
+        return f"Ollama model(s) not pulled yet: {', '.join(absent)}. Run `bytx setup`, then `bytx run`."
+    return None
 
 
 def reexport(conn, cfg: Config, video_ids: list[str] | None = None) -> list[str]:
@@ -341,6 +372,58 @@ def reexport(conn, cfg: Config, video_ids: list[str] | None = None) -> list[str]
         write_shared_copy(cfg, video, segments, assessment)
         done.append(video.id)
     return done
+
+
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]+")  # YouTube ids, and fb_<digits>
+
+
+@dataclass
+class Removal:
+    """Everywhere bytx has recorded one video (see remove_video)."""
+
+    video_id: str
+    video: store.Video | None  # the DB row (segments, chunks and summary go with it)
+    data_dir: Path | None  # data/videos/<id>/
+    shared_folder: Path | None  # its folder under transcribed_files_dir
+    ledger_entry: bool
+
+    @property
+    def empty(self) -> bool:
+        return not (self.video or self.data_dir or self.shared_folder or self.ledger_entry)
+
+
+def remove_video(conn, cfg: Config, video_id: str, apply: bool = False) -> Removal:
+    """Finds everything recorded for `video_id` and, with `apply`, deletes it,
+    so `bytx add` accepts the video again (e.g. to redo it in the right
+    language). Without `apply` nothing changes. Raises ValueError for
+    something that isn't a video id, before any path is built from it."""
+    if not _VIDEO_ID_RE.fullmatch(video_id):
+        raise ValueError(f"{video_id!r} is not a video id")
+    data_dir = export.video_dir(cfg.paths.videos_dir, video_id)
+    ledger_file = ledger.ledger_path(cfg)
+    removal = Removal(
+        video_id=video_id,
+        video=store.get_video(conn, video_id),
+        data_dir=data_dir if data_dir.is_dir() else None,
+        shared_folder=export.find_transcript_folder(cfg.paths.transcribed_files_dir, video_id),
+        ledger_entry=video_id in ledger.load_seen_ids(ledger_file),
+    )
+    if not apply:
+        return removal
+
+    if removal.video:
+        store.delete_video(conn, video_id)
+    if removal.data_dir:
+        shutil.rmtree(removal.data_dir)
+    if removal.shared_folder:
+        shutil.rmtree(removal.shared_folder)
+        date_dir = removal.shared_folder.parent
+        if not any(date_dir.iterdir()):
+            date_dir.rmdir()
+        export.write_index(cfg.paths.transcribed_files_dir)
+    if removal.ledger_entry:
+        ledger.remove_entry(ledger_file, video_id)
+    return removal
 
 
 def retry_failed(conn) -> int:

@@ -25,6 +25,12 @@ already_ct2 = true
 URL = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
 
 
+@pytest.fixture(autouse=True)
+def _no_hub_size_lookups(monkeypatch):
+    """`bytx setup` asks Hugging Face for model sizes; tests stay offline."""
+    monkeypatch.setattr(cli.models, "download_size", lambda model_cfg: None)
+
+
 @pytest.fixture()
 def config_path(tmp_path):
     path = tmp_path / "config.toml"
@@ -172,6 +178,17 @@ class _NoOllama:
     def is_reachable(self):
         return False
 
+    def close(self):
+        pass
+
+
+class _RunningOllama(_NoOllama):
+    def is_reachable(self):
+        return True
+
+    def has_model(self, model):
+        return True
+
 
 class _Done:
     returncode = 0
@@ -185,39 +202,73 @@ def test_doctor_checks_each_configured_asr_model(config_path, monkeypatch):
     result = runner.invoke(cli.app, ["doctor", "--config", config_path])
 
     assert result.exit_code == 1  # models are not downloaded in the test dir
-    assert "ASR model 'bn-model' not found" in result.output
-    assert "ASR model 'multi' not found" in result.output
+    assert "ASR model 'bn-model' (org/bn) is not downloaded" in result.output
+    assert "ASR model 'multi' (org/multi) is not downloaded" in result.output
 
 
-def test_setup_converts_every_configured_model_then_pulls_ollama_models(config_path, monkeypatch):
-    calls = []
-
-    def fake_run(cmd, *args, **kwargs):
-        calls.append(cmd)
-        return _Done()
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+def test_setup_downloads_every_configured_model_then_pulls_ollama_models(config_path, tmp_path, monkeypatch):
+    downloaded, calls = [], []
+    monkeypatch.setenv("OLLAMA_HOST", "http://elsewhere:1")  # the configured host wins
+    monkeypatch.setattr(cli, "OllamaClient", _RunningOllama)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: downloaded.append(m.key) or tmp_path)
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda cmd, env=None, **k: calls.append((cmd, env["OLLAMA_HOST"])) or _Done()
+    )
 
     result = runner.invoke(cli.app, ["setup", "--config", config_path])
 
     assert result.exit_code == 0, result.output
-    converted = [c[2] for c in calls if c[1].endswith("convert_model.py")]
-    assert converted == ["bn-model", "multi"]
-    pulled = [c[2] for c in calls if c[:2] == ["ollama", "pull"]]
-    assert pulled == ["bge-m3", "gemma3:4b"]
+    assert downloaded == ["bn-model", "multi"]
+    host = "http://127.0.0.1:11434"
+    assert calls == [(["ollama", "pull", "bge-m3"], host), (["ollama", "pull", "gemma3:4b"], host)]
 
 
-def test_setup_stops_when_a_model_fails_to_install(config_path, monkeypatch):
-    class Failed:
-        returncode = 1
+def test_setup_without_the_ollama_command_says_where_to_pull_and_succeeds(config_path, tmp_path, monkeypatch):
+    def no_ollama_command(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(cli, "OllamaClient", _RunningOllama)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", no_ollama_command)
+
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "`ollama pull bge-m3`" in output and "Setup complete" in output
+
+
+def test_setup_says_how_much_it_will_download_first(config_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.models, "missing", lambda cfg: ["multi"])  # bn-model is already here
+    monkeypatch.setattr(cli.models, "download_size", lambda m: 1_617_884_929)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: tmp_path)
+
+    output = " ".join(runner.invoke(cli.app, ["setup", "--config", config_path]).output.split())
+
+    assert "Downloading 1.6 GB of speech models: multi (1.6 GB)" in output
+    assert output.index("Downloading") < output.index("Setting up ASR model")
+
+
+def test_setup_stops_when_a_model_fails_to_download(config_path, monkeypatch):
+    def fail(model_cfg, force=False):
+        raise OSError("connection reset")
 
     calls = []
-    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or Failed())
+    monkeypatch.setattr(cli.models, "download", fail)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
 
     result = runner.invoke(cli.app, ["setup", "--config", config_path])
 
     assert result.exit_code == 1
-    assert len(calls) == 1  # did not go on to the next model or to Ollama
+    assert "connection reset" in result.output
+    assert calls == []  # did not go on to Ollama
+
+
+def test_setup_explains_that_an_unconverted_model_needs_the_convert_script(config_path):
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])  # bn-model is not already_ct2
+    assert result.exit_code == 1
+    assert "scripts/convert_model.py" in result.output
 
 
 # --- search output ----------------------------------------------------------------------
@@ -301,14 +352,55 @@ def test_list_platform_filter_ignores_case(config_path, tmp_path, flag):
     assert "fb_123456789012345" in result.output and "aaaaaaaaaaa" not in result.output
 
 
-def test_doctor_says_deno_is_only_needed_for_youtube(config_path, monkeypatch):
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda tool: None)
+def test_doctor_reports_a_missing_deno_and_never_checks_ffmpeg(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli, "_deno_path", lambda: None)
     result = runner.invoke(cli.app, ["doctor", "--config", config_path])
-    assert "deno not found on PATH (needed for YouTube; Facebook works without it)" in result.output
-    assert "ffmpeg not found on PATH" in result.output
-    assert "ffmpeg not found on PATH (needed" not in result.output  # the note is deno's alone
+    assert result.exit_code == 1
+    assert "which YouTube downloads need" in result.output and "Facebook works without it" in result.output
+    assert "ffmpeg" not in result.output
+
+
+def test_doctor_finds_the_deno_that_ships_with_bytx():
+    assert cli._deno_path() is not None  # yt-dlp[deno] installs it next to python
+
+
+class _NvidiaSmi:
+    returncode = 0
+    stdout = "GPU 0: NVIDIA GeForce RTX 4070 (UUID: GPU-x)\n"
+
+
+def test_doctor_suggests_the_gpu_version_for_an_unused_nvidia_gpu(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli, "_gpu_extra_installed", lambda: False)
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/bin/{tool}")
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
+    output = " ".join(runner.invoke(cli.app, ["doctor", "--config", config_path]).output.split())
+    assert "RTX 4070" in output and 'uv tool install --reinstall --python 3.12 "bytx[gpu]"' in output
+
+
+def test_doctor_gives_no_gpu_tip_when_the_gpu_version_is_installed(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli, "_gpu_extra_installed", lambda: True)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
+    result = runner.invoke(cli.app, ["doctor", "--config", config_path])
+    assert "bytx[gpu]" not in result.output
+
+
+def test_doctor_shows_the_data_folder_and_whether_settings_exist(config_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    with_file = runner.invoke(cli.app, ["doctor", "--config", config_path]).output
+    defaults = runner.invoke(cli.app, ["doctor"]).output  # BYTX_HOME has no config.toml
+    assert "Data folder:" in with_file and "using the defaults" not in with_file
+    assert "using the defaults" in defaults
+
+
+def test_bench_clip_without_ffmpeg_stops_before_downloading(config_path, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(fetch, "download_audio", lambda *a: pytest.fail("should not download"))
+    result = runner.invoke(cli.app, ["bench", URL, "--clip", "00:00-00:10", "--config", config_path])
+    assert result.exit_code == 1
+    assert "needs ffmpeg" in result.output
 
 
 # --- quality / reexport / compare ----------------------------------------------------------
@@ -497,3 +589,125 @@ def test_compare_unknown_video_and_missing_file_fail(config_path, tmp_path):
     missing = runner.invoke(cli.app, ["compare", "goodgoodgoo", "--against", "nofile.vtt", "--config", config_path])
     assert missing.exit_code == 1
     assert "No such file" in missing.output
+
+
+# --- data folder ----------------------------------------------------------------------
+
+def test_the_first_command_creates_the_data_folder(tmp_path, monkeypatch):
+    home = tmp_path / "fresh"
+    monkeypatch.setenv("BYTX_HOME", str(home))
+    result = runner.invoke(cli.app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "No videos in the library yet" in result.output
+    assert (home / "data" / "library.db").is_file()
+
+
+def test_run_before_setup_exits_with_a_hint_and_keeps_the_queue(config_path, tmp_path, one_url):
+    runner.invoke(cli.app, ["add", URL, "--lang", "bn", "--config", config_path])
+    result = runner.invoke(cli.app, ["run", "--config", config_path])  # nothing downloaded in tmp
+    assert result.exit_code == 1
+    assert "Run `bytx setup`" in result.output
+    assert db(tmp_path).execute("SELECT status FROM videos").fetchone()[0] == "queued"
+
+
+def test_run_prints_why_it_stopped_and_still_succeeds(config_path, monkeypatch):
+    stopped = cli.pipeline.RunSummary(transcribed=1, stopped="Ollama (optional) isn't running")
+    monkeypatch.setattr(cli.pipeline, "run", lambda *a, **k: stopped)
+    result = runner.invoke(cli.app, ["run", "--config", config_path])
+    assert result.exit_code == 0
+    assert "Ollama (optional) isn't running" in result.output
+
+
+# --- Ollama is optional ------------------------------------------------------------------
+
+def test_setup_without_ollama_skips_its_models_and_succeeds(config_path, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.models, "download", lambda m, force=False: tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, *a, **k: calls.append(cmd) or _Done())
+
+    result = runner.invoke(cli.app, ["setup", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "Skipped the Q&A and summary models" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize("args", [["ask", "why?"], ["search", "x", "--semantic"], ["summarize", "--all"]])
+def test_llm_commands_without_ollama_say_how_to_enable_them(config_path, monkeypatch, args):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    result = runner.invoke(cli.app, [*args, "--config", config_path])
+    assert result.exit_code == 1
+    assert "https://ollama.com" in result.output
+
+
+def test_keyword_search_works_without_ollama(config_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    _transcribed(tmp_path, "aaaaaaaaaaa", "hello world")
+    result = runner.invoke(cli.app, ["search", "hello", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "Title aaaaaaaaaaa" in result.output
+
+
+class _LoadedTranscriber:
+    device, compute_type = "cuda", "float16"
+
+    def __init__(self, *args):
+        pass
+
+    def unload(self):
+        pass
+
+
+def test_doctor_passes_without_ollama(config_path, tmp_path, monkeypatch):
+    import shutil
+
+    from bytx import transcribe
+
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+    monkeypatch.setattr(cli.models, "local_path", lambda m: tmp_path)
+    monkeypatch.setattr(transcribe, "Transcriber", _LoadedTranscriber)
+    monkeypatch.setattr(shutil, "which", lambda tool: f"/bin/{tool}")
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _Done())
+
+    result = runner.invoke(cli.app, ["doctor", "--config", config_path])
+
+    assert result.exit_code == 0, result.output
+    assert "WARN" in result.output and "Ollama not reachable" in result.output
+
+
+# --- remove -----------------------------------------------------------------------------
+
+def test_remove_is_a_dry_run_without_yes(config_path, tmp_path):
+    _transcribed(tmp_path, "aaaaaaaaaaa", "hello")
+    result = runner.invoke(cli.app, ["remove", "aaaaaaaaaaa", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "database row:     yes" in result.output and "Dry run" in result.output
+    assert db(tmp_path).execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 1
+
+
+def test_remove_with_yes_deletes_the_video(config_path, tmp_path):
+    _transcribed(tmp_path, "aaaaaaaaaaa", "hello")
+    result = runner.invoke(cli.app, ["remove", "aaaaaaaaaaa", "--yes", "--config", config_path])
+    assert result.exit_code == 0, result.output
+    assert "Removed aaaaaaaaaaa" in result.output
+    assert db(tmp_path).execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
+
+
+def test_remove_and_doctor_print_bracketed_paths_as_they_are(tmp_path, monkeypatch):
+    home = tmp_path / "lib [bangla]"  # rich would read "[bangla]" as a style tag and drop it
+    (home / "data" / "videos" / "aaaaaaaaaaa").mkdir(parents=True)
+    (home / "config.toml").write_text(_CONFIG, encoding="utf-8")
+    _transcribed(home, "aaaaaaaaaaa", "hello")
+    monkeypatch.setattr(cli, "OllamaClient", _NoOllama)
+
+    for args in (["remove", "aaaaaaaaaaa"], ["doctor"]):
+        result = runner.invoke(cli.app, [*args, "--config", str(home / "config.toml")])
+        assert "[bangla]" in result.output, args
+
+
+@pytest.mark.parametrize(("video_id", "message"), [("zzzzzzzzzzz", "No such video"), ("..", "is not a video id")])
+def test_remove_of_an_unknown_or_bad_id_exits_non_zero(config_path, video_id, message):
+    result = runner.invoke(cli.app, ["remove", video_id, "--yes", "--config", config_path])
+    assert result.exit_code == 1
+    assert message in result.output

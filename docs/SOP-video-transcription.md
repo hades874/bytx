@@ -3,9 +3,13 @@
 Applies to anyone (human or AI agent) who is asked to "transcribe the new video(s) in `urls.txt`" or
 similar. Follow it in order. Do not skip step 2 or step 5.
 
+`bytx` here is the installed command (`uv tool install bytx`, or `uv tool install --editable ".[gpu]"`
+from a clone). Your library lives in the data folder: `$BYTX_HOME` if set, else `~/bytx`. `bytx doctor`
+prints where it is. Paths below are relative to it.
+
 ## Why this exists
 
-On 2026-09-27 an English video was queued with a bare `bytx add urls.txt --run`. `config.toml` defaults
+On 2026-09-27 an English video was queued with a bare `bytx add urls.txt --run`. The config defaults
 to `asr.default_language = "bn"`, so the video was recorded as Bangla and decoded with the Bangla ASR
 model, which wrote English speech out as Bangla-script gibberish. Nothing flagged it: the pipeline
 reported `failed=0`, the output was 154 words/min, and `bytx quality` showed no flags. The error was
@@ -20,11 +24,10 @@ only caught by the user reading the output. Two rules follow from that:
 ### 1. Preflight
 
 ```powershell
-. .\env.ps1                # PATH + caches (PowerShell). Needed every new shell.
-uv run bytx status         # anything stuck in queued/failed from an earlier run?
+bytx status          # anything stuck in queued/failed from an earlier run?
 ```
 
-Run `uv run bytx doctor` if this is a fresh shell/machine or the last run had GPU/Ollama errors.
+Run `bytx doctor` if this is a fresh machine or the last run had GPU/Ollama errors.
 If videos are already `queued`, decide whether they belong to this job before running: `bytx run`
 processes the **whole** queue, not just the URLs you just added.
 
@@ -40,17 +43,18 @@ For each URL in `urls.txt`:
 
 - Bangla speech with English words mixed in is still `bn`. Do **not** use Whisper language ID or
   YouTube's language metadata to decide: both mislabel that case (see CLAUDE.md).
-- Fetch the title cheaply if you need it: `uv run yt-dlp --skip-download --print "%(channel)s | %(title)s" <url>`
+- Fetch the title cheaply if you need it:
+  `uvx --from "yt-dlp[default,deno]" yt-dlp --skip-download --print "%(channel)s | %(title)s" <url>`
 - Never fall back to `asr.default_language`. If you cannot decide and cannot ask, use `--lang auto`.
-- If `urls.txt` mixes languages, split it into one temporary file per language (scratch dir, not the repo),
-  or use `--lang auto` for the whole file.
+- If `urls.txt` mixes languages, split it into one temporary file per language (a scratch folder, not
+  the data folder or the repo), or use `--lang auto` for the whole file.
 
 State your decision in your reply before running, e.g. "J-5L2k9LHAc: English (title/channel) → `--lang en`".
 
 ### 3. Queue with an explicit `--lang`
 
 ```powershell
-uv run bytx add urls.txt --lang en          # or bn / auto. Always pass --lang.
+bytx add urls.txt --lang en          # or bn / auto. Always pass --lang.
 ```
 
 Check the output line `Queued N new video(s).` matches the number of *new* URLs you expected. Fewer
@@ -59,23 +63,25 @@ means some were already in the DB or ledger; find out which, do not assume.
 ### 4. Run
 
 ```powershell
-uv run bytx run
+bytx run
 ```
 
 (`bytx add --run` does add + run in one go; fine once step 2 is done.) Long videos take a while, so run it
-in the background and wait for completion. Ctrl+C is safe: `bytx run` resumes.
+in the background and wait for completion. Ctrl+C is safe: `bytx run` resumes. If it ends with "Ollama
+(optional) isn't running", the transcripts are saved but not indexed or summarized; start Ollama and
+run `bytx run` again before step 5.
 
 ### 5. Verify (do not skip)
 
-For **each** new video id (`uv run bytx list` shows them):
+For **each** new video id (`bytx list` shows them):
 
-1. **Status and language.** `uv run bytx list --status summarized` — the row is present and the `Lang`
+1. **Status and language.** `bytx list --status summarized`: the row is present and the `Lang`
    column is what you decided in step 2 (for `--lang auto`, note which language it picked).
-2. **Script matches language.** `uv run bytx show <id>` and read the first ~10 lines and a few from the
+2. **Script matches language.** `bytx show <id>` and read the first ~10 lines and a few from the
    middle:
    - `en` → English words in Latin script, real sentences. Bangla characters or gibberish = wrong.
    - `bn` → Bangla script. Mostly Latin text for a Bangla video = wrong (possible `auto` mis-detect).
-3. **Quality flags.** `uv run bytx quality <id>`. Note this does **not** detect a wrong-language transcript
+3. **Quality flags.** `bytx quality <id>`. Note this does **not** detect a wrong-language transcript
    (that is why step 5.2 exists). It catches gaps, low-confidence clips and abnormal words/min.
 4. **Summary exists and is in sensible language.** `data/videos/<id>/summary.md`.
 5. **Artifacts.** A new folder under `yt-transcribed-files/<date>/`, a new row in `yt-transcribed-files/INDEX.md`,
@@ -89,20 +95,20 @@ Tell the user, per video: id, title, language used and why, the folder path, and
 step 5 (e.g. "first 10 lines are coherent English; no quality flags"). Include any failures or flags
 verbatim. `failed=0` alone is not a report.
 
-### 7. Git
+### 7. Files
 
-The transcript folder, `INDEX.md` and `TRANSCRIBED_LEDGER.md` are tracked. Do **not** commit unless the
-user asks. Do not touch `urls.txt` (it is the user's input file).
+Transcripts, `INDEX.md` and `TRANSCRIBED_LEDGER.md` live in the data folder, outside the code repo, so
+there is nothing to commit. Do not touch `urls.txt` (it is the user's input file).
 
 ## Redoing a video
 
 Use when the language was wrong or the transcript is unusable. `bytx add` refuses anything in the DB or
-ledger, so all of it has to be cleared first. The helper does that and rebuilds `INDEX.md`:
+ledger, so all of it has to be cleared first. `bytx remove` does that and rebuilds `INDEX.md`:
 
 ```powershell
-uv run python scripts/redo_video.py <video_id>          # dry run: shows what would be deleted
-uv run python scripts/redo_video.py <video_id> --yes    # delete DB row, data/videos/<id>, shared folder, ledger entry
-uv run bytx add <url> --lang <bn|en> --run
+bytx remove <video_id>          # dry run: shows what would be deleted
+bytx remove <video_id> --yes    # delete DB row, data/videos/<id>, transcript copy, ledger entry
+bytx add <url> --lang <bn|en> --run
 ```
 
 This deletes data, so confirm with the user first unless they already asked for the redo. Then repeat
@@ -115,9 +121,10 @@ step 5 on the new output.
 | Bangla-script gibberish for English speech | Video queued as `bn` | Redo with `--lang en` |
 | English text for Bangla speech | Queued as `en`, or `auto` mis-detected | Redo with `--lang bn` |
 | `Queued 0 new video(s)` | Already in DB/ledger | `bytx list`; redo only if intended |
+| `bytx run` says "Run `bytx setup`" | ASR or Ollama models not downloaded | `bytx setup`, then `bytx run` |
 | Status `failed` | Download/ASR/Ollama error | `bytx status` for the message, fix cause, `bytx retry` then `bytx run` |
 | `bytx run` did more than you queued | Older videos were still `queued` | Check `bytx status` in step 1 next time |
-| GPU / cuDNN / Ollama errors | Environment | `bytx doctor`; make sure `env.ps1` was sourced |
+| GPU / cuDNN / Ollama errors | Environment | `bytx doctor` |
 | Facebook URL fails | No subtitles/playlists on FB; cookies may be needed | See README, `[fetch]` in `config.toml` |
 
 ## Rules for AI agents specifically

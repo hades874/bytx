@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run pytest
+
+  # Install the built wheel the way users do and run it outside the repo: proves
+  # the packaged defaults ship and that bytx works from any folder, on every OS.
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - name: uv tool install the wheel
+        shell: bash
+        run: |
+          uv tool install --python 3.12 dist/*.whl
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+      - name: Run it from another folder with a fresh data folder
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          BYTX_HOME: ${{ runner.temp }}/bytx-home
+        run: |
+          bytx --help
+          bytx status
+          test -f "$BYTX_HOME/data/library.db"
+
+  # A v* tag publishes to PyPI through trusted publishing (no stored token),
+  # only after every test and smoke job passed.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, smoke]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: The tag matches the package version
+        run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+      - run: uv build
+      - run: uv publish

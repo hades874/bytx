@@ -20,6 +20,7 @@ from .config import Config
 DEFAULT_LEDGER_FILENAME = "TRANSCRIBED_LEDGER.md"
 
 _ID_LINE_RE = re.compile(r"^- id: (\S+)$", re.MULTILINE)
+_ENTRY_RE = re.compile(r"^- id: (\S+)\n(?:  .*\n)*\n?", re.MULTILINE)
 
 
 def ledger_path(cfg: Config) -> Path:
@@ -56,3 +57,18 @@ def append_entry(path: Path, video: store.Video) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(entry)
+
+
+def remove_entry(path: Path, video_id: str) -> bool:
+    """Deletes `video_id`'s entry, so `bytx add` accepts the video again.
+    Returns whether there was one."""
+    if video_id not in load_seen_ids(path):
+        return False
+    text = path.read_text(encoding="utf-8")
+    # Write a copy, then swap it in: a crash mid-write must not lose the whole ledger.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        _ENTRY_RE.sub(lambda m: "" if m.group(1) == video_id else m.group(0), text), encoding="utf-8"
+    )
+    tmp.replace(path)
+    return True

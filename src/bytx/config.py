@@ -1,4 +1,5 @@
-"""Loads config.toml into typed, dot-accessible config objects.
+"""Loads the settings into typed, dot-accessible config objects: the packaged
+defaults.toml with the user's config.toml merged over it.
 
 Kept deliberately dependency-free (stdlib tomllib only) so this module can be
 imported early, before any heavy ML libraries.
@@ -6,13 +7,16 @@ imported early, before any heavy ML libraries.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 
 from . import langs
 
 DEFAULT_CONFIG_FILENAME = "config.toml"
+DEFAULTS_FILENAME = "defaults.toml"
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,7 @@ class AsrConfig:
     # words the Bangla model writes for a sample of it are Bangla function
     # words (see langdetect.py).
     auto_english_below: float = 0.10
-    # Vocabulary file (see glossary.py); relative to the project root. None disables it.
+    # Vocabulary file (see glossary.py); relative to the data folder. None disables it.
     glossary: Path | None = None
     # Languages whose decoding is primed with the glossary's terms. Priming a
     # fine-tuned model can make it echo the prompt, so Bangla is opt-in.
@@ -144,7 +148,6 @@ class SummarizeConfig:
 @dataclass(frozen=True)
 class PathsConfig:
     data_dir: Path
-    models_dir: Path
     transcribed_files_dir: Path
 
     @property
@@ -175,7 +178,6 @@ class Config:
         self.paths.data_dir.mkdir(parents=True, exist_ok=True)
         self.paths.videos_dir.mkdir(parents=True, exist_ok=True)
         self.paths.audio_dir.mkdir(parents=True, exist_ok=True)
-        self.paths.models_dir.mkdir(parents=True, exist_ok=True)
         self.paths.transcribed_files_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -184,31 +186,58 @@ def _resolve(root: Path, raw: str) -> Path:
     return p if p.is_absolute() else (root / p)
 
 
+def _model_source(root: Path, raw: str) -> str:
+    """A model's `source`: a folder (relative to the data folder unless absolute)
+    as its full path, else unchanged, as a Hugging Face repo id."""
+    folder = root / Path(raw).expanduser()  # an absolute path replaces root
+    return str(folder) if folder.is_dir() else raw
+
+
+def _merge(base: dict, over: dict) -> dict:
+    """`over` on top of `base`: tables merge key by key, any other value replaces."""
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_defaults() -> dict:
+    """The packaged defaults.toml, as raw TOML data."""
+    return tomllib.loads((files(__package__) / DEFAULTS_FILENAME).read_text(encoding="utf-8"))
+
+
+def data_home() -> Path:
+    """The data folder: $BYTX_HOME, else ~/bytx."""
+    env = os.environ.get("BYTX_HOME")
+    return Path(env).expanduser() if env else Path.home() / "bytx"
+
+
 def load_config(path: str | Path | None = None) -> Config:
-    """Load config.toml. Defaults to config.toml next to the project root
-    (found by walking up from cwd looking for pyproject.toml), falling back
-    to the current directory.
+    """Load the packaged defaults with the user's config.toml merged over them.
+    `path` names the user file (it must exist) and its folder is the data
+    folder; otherwise the data folder is `data_home()` and its config.toml
+    may be missing.
     """
     if path is not None:
         config_path = Path(path)
         root = config_path.parent
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found at {config_path}.")
     else:
-        root = _find_project_root(Path.cwd())
+        root = data_home()
         config_path = root / DEFAULT_CONFIG_FILENAME
 
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config file not found at {config_path}. "
-            "Copy config.toml from the project root or pass --config."
-        )
-
-    with config_path.open("rb") as f:
-        raw = tomllib.load(f)
+    raw = load_defaults()
+    if config_path.exists():
+        with config_path.open("rb") as f:
+            raw = _merge(raw, tomllib.load(f))
 
     paths_raw = raw.get("paths", {})
     paths = PathsConfig(
         data_dir=_resolve(root, paths_raw.get("data_dir", "data")),
-        models_dir=_resolve(root, paths_raw.get("models_dir", "models")),
         transcribed_files_dir=_resolve(
             root, paths_raw.get("transcribed_files_dir", "yt-transcribed-files")
         ),
@@ -219,7 +248,7 @@ def load_config(path: str | Path | None = None) -> Config:
     models = {
         key: AsrModelConfig(
             key=key,
-            source=m["source"],
+            source=_model_source(root, m["source"]),
             language=m.get("language", langs.BANGLA),
             already_ct2=m.get("already_ct2", False),
             max_clip_seconds=m.get("max_clip_seconds"),
@@ -330,10 +359,3 @@ def load_config(path: str | Path | None = None) -> Config:
         summarize=summarize,
         quality=quality,
     )
-
-
-def _find_project_root(start: Path) -> Path:
-    for candidate in [start, *start.parents]:
-        if (candidate / "pyproject.toml").exists():
-            return candidate
-    return start

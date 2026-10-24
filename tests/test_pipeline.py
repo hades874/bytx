@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from bytx import fetch, ledger, pipeline, platforms, store
+from bytx import fetch, ledger, models, pipeline, platforms, store
 from bytx.config import (
     AsrConfig,
     AsrModelConfig,
@@ -37,7 +37,6 @@ def make_config(tmp_path: Path, *, summarize_enabled: bool = True) -> Config:
         root=tmp_path,
         paths=PathsConfig(
             data_dir=tmp_path / "data",
-            models_dir=tmp_path / "models",
             transcribed_files_dir=tmp_path / "yt-transcribed-files",
         ),
         asr=AsrConfig(
@@ -127,6 +126,8 @@ class FakeOllamaClient:
     """Replaces bytx.pipeline.OllamaClient as a context manager."""
 
     instances: list[FakeOllamaClient] = []
+    reachable = True
+    pulled: set[str] | None = None  # None: every model is pulled
 
     def __init__(self, ollama_cfg):
         self.cfg = ollama_cfg
@@ -139,6 +140,12 @@ class FakeOllamaClient:
     def __exit__(self, *a):
         self.closed = True
 
+    def is_reachable(self):
+        return FakeOllamaClient.reachable
+
+    def has_model(self, model):
+        return FakeOllamaClient.pulled is None or model in FakeOllamaClient.pulled
+
     def embed(self, texts, model=None):
         return [[1.0, 0.0, 0.0] for _ in texts]
 
@@ -150,6 +157,8 @@ class FakeOllamaClient:
 def _reset_fakes(monkeypatch):
     FakePool.instances = []
     FakeOllamaClient.instances = []
+    FakeOllamaClient.reachable = True
+    FakeOllamaClient.pulled = None
     _TRANSCRIBE_RESULTS.clear()
     _TRANSCRIBE_FAILURES.clear()
     _TRANSCRIBE_STATS.clear()
@@ -157,6 +166,7 @@ def _reset_fakes(monkeypatch):
     _SAMPLE_FAILURES.clear()
     monkeypatch.setattr(pipeline, "TranscriberPool", FakePool)
     monkeypatch.setattr(pipeline, "OllamaClient", FakeOllamaClient)
+    monkeypatch.setattr(pipeline.models, "missing", lambda cfg: [])  # `bytx setup` has run
     yield
 
 
@@ -441,6 +451,74 @@ def test_run_happy_path_all_stages(conn, tmp_path, monkeypatch):
     for v in vids:
         assert store.get_video(conn, v).status == "summarized"
     assert FakePool.instances[0].unloaded is True
+
+
+def test_run_before_setup_stops_and_leaves_every_video_queued(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    downloads = patch_fetch(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline.models, "missing", lambda cfg: ["m", "e"])
+    vids = ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    for v in vids:
+        store.upsert_video(conn, store.Video(id=v, url=video_url(v), status="queued"))
+
+    with pytest.raises(models.ModelsMissing, match="Run `bytx setup`"):
+        pipeline.run(conn, cfg)
+
+    assert [store.get_video(conn, v).status for v in vids] == ["queued", "queued"]
+    assert downloads == [] and FakePool.instances == []
+
+
+def test_run_with_an_empty_queue_does_not_need_the_asr_models(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(pipeline.models, "missing", lambda cfg: ["m"])
+    assert pipeline.run(conn, cfg).failed == 0  # indexing/summaries of old videos can still run
+
+
+def test_run_without_ollama_stops_after_transcription_without_failing(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="queued"))
+    FakeOllamaClient.reachable = False
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.transcribed, result.indexed, result.failed) == (1, 0, 0)
+    assert "Ollama (optional) isn't running" in result.stopped
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "transcribed"
+
+    FakeOllamaClient.reachable = True  # the user starts Ollama and runs again
+    again = pipeline.run(conn, cfg)
+
+    assert (again.indexed, again.summarized, again.stopped) == (1, 1, None)
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "summarized"
+
+
+def test_run_with_ollama_models_not_pulled_says_run_setup(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path)
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="transcribed"))
+    store.replace_segments(conn, "aaaaaaaaaaa", [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="t")])
+    FakeOllamaClient.pulled = {"gemma3:4b"}  # no embedding model
+
+    result = pipeline.run(conn, cfg)
+
+    assert "bge-m3" in result.stopped and "bytx setup" in result.stopped
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "transcribed"
+
+
+def test_run_without_summaries_does_not_need_the_chat_model(conn, tmp_path, monkeypatch):
+    cfg = make_config(tmp_path, summarize_enabled=False)
+    store.upsert_video(conn, store.Video(id="aaaaaaaaaaa", url=video_url("aaaaaaaaaaa"), status="transcribed"))
+    store.replace_segments(conn, "aaaaaaaaaaa", [store.Segment(idx=0, start_s=0.0, end_s=1.0, text="t")])
+    FakeOllamaClient.pulled = {"bge-m3"}
+
+    result = pipeline.run(conn, cfg)
+
+    assert (result.indexed, result.stopped) == (1, None)
+
+
+def test_run_with_nothing_to_index_never_contacts_ollama(conn, tmp_path):
+    assert pipeline.run(conn, make_config(tmp_path)).stopped is None
+    assert FakeOllamaClient.instances == []
 
 
 def test_run_continues_after_one_video_fails(conn, tmp_path, monkeypatch):
@@ -1161,3 +1239,71 @@ def test_transcribe_one_records_quality_and_confidence_in_the_shared_copy(conn, 
     assert "low-confidence" in " ".join(meta["quality"]["flags"])
     seg = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["segments"][0]
     assert seg["avg_logprob"] == -1.5
+
+
+# --- remove_video -------------------------------------------------------------------
+
+def _library_with(conn, tmp_path, monkeypatch, vids):
+    """Runs `vids` through the whole pipeline, so each has a DB row, chunks, a
+    summary, data/videos/<id>/, a transcript copy and a ledger entry."""
+    cfg = make_config(tmp_path)
+    patch_fetch(monkeypatch, tmp_path)
+    for v in vids:
+        store.upsert_video(conn, store.Video(id=v, url=video_url(v), status="queued"))
+    assert pipeline.run(conn, cfg).summarized == len(vids)
+    return cfg
+
+
+def test_remove_video_dry_run_finds_everything_and_changes_nothing(conn, tmp_path, monkeypatch):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa"])
+
+    removal = pipeline.remove_video(conn, cfg, "aaaaaaaaaaa")
+
+    assert removal.video is not None and removal.ledger_entry
+    assert removal.data_dir == cfg.paths.videos_dir / "aaaaaaaaaaa"
+    assert removal.shared_folder is not None and removal.shared_folder.is_dir()
+    assert store.get_video(conn, "aaaaaaaaaaa").status == "summarized"
+    assert removal.data_dir.is_dir()
+    assert "aaaaaaaaaaa" in ledger.load_seen_ids(ledger.ledger_path(cfg))
+
+
+def test_remove_video_deletes_every_trace_and_the_video_can_be_added_again(conn, tmp_path, monkeypatch):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+    shared = pipeline.remove_video(conn, cfg, "aaaaaaaaaaa").shared_folder
+
+    pipeline.remove_video(conn, cfg, "aaaaaaaaaaa", apply=True)
+
+    assert store.get_video(conn, "aaaaaaaaaaa") is None
+    assert store.get_segments(conn, "aaaaaaaaaaa") == []
+    assert store.get_chunks(conn, "aaaaaaaaaaa") == []
+    assert store.get_summary(conn, "aaaaaaaaaaa") is None
+    assert [h.video_id for h in store.search_fts(conn, "default")] == ["bbbbbbbbbbb"]
+    assert not (cfg.paths.videos_dir / "aaaaaaaaaaa").exists()
+    assert not shared.exists()
+    index = (cfg.paths.transcribed_files_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "Title aaaaaaaaaaa" not in index and "Title bbbbbbbbbbb" in index
+    assert ledger.load_seen_ids(ledger.ledger_path(cfg)) == {"bbbbbbbbbbb"}
+    assert store.get_video(conn, "bbbbbbbbbbb").status == "summarized"  # the other video is untouched
+
+    monkeypatch.setattr(pipeline.fetch, "expand_to_video_urls", lambda target, cfg: [video_url("aaaaaaaaaaa")])
+    assert pipeline.add_targets(conn, cfg, ["x"], language="en") == ["aaaaaaaaaaa"]
+
+
+def test_remove_video_drops_the_date_folder_once_it_is_empty(conn, tmp_path, monkeypatch):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa"])
+    date_dir = pipeline.remove_video(conn, cfg, "aaaaaaaaaaa").shared_folder.parent
+    pipeline.remove_video(conn, cfg, "aaaaaaaaaaa", apply=True)
+    assert not date_dir.exists()
+    assert (cfg.paths.transcribed_files_dir / "INDEX.md").is_file()
+
+
+def test_remove_video_of_an_unknown_id_finds_nothing(conn, tmp_path):
+    assert pipeline.remove_video(conn, make_config(tmp_path), "zzzzzzzzzzz", apply=True).empty
+
+
+@pytest.mark.parametrize("bad", ["..", ".", "a/b", r"a\b", "", "../data"])
+def test_remove_video_rejects_anything_that_is_not_a_video_id(conn, tmp_path, monkeypatch, bad):
+    cfg = _library_with(conn, tmp_path, monkeypatch, ["aaaaaaaaaaa"])
+    with pytest.raises(ValueError, match="is not a video id"):
+        pipeline.remove_video(conn, cfg, bad, apply=True)
+    assert cfg.paths.db_path.parent.is_dir() and (cfg.paths.videos_dir / "aaaaaaaaaaa").is_dir()

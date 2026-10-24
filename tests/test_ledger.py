@@ -95,3 +95,28 @@ def test_facebook_ids_roundtrip_next_to_youtube_ones(tmp_path):
 
     assert ledger.load_seen_ids(path) == {"abc123", "fb_123456789012345"}
     assert "url: https://www.facebook.com/watch/?v=123456789012345" in path.read_text(encoding="utf-8")
+
+
+def test_remove_entry_deletes_only_that_video(tmp_path):
+    path = tmp_path / "TRANSCRIBED_LEDGER.md"
+    for vid in ("aaa", "bbb", "ccc"):
+        ledger.append_entry(path, make_video(id=vid, url=f"https://youtu.be/{vid}"))
+
+    assert ledger.remove_entry(path, "bbb") is True
+
+    assert ledger.load_seen_ids(path) == {"aaa", "ccc"}
+    text = path.read_text(encoding="utf-8")
+    assert "youtu.be/bbb" not in text and "youtu.be/ccc" in text
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]  # no temp copy left behind
+    ledger.append_entry(path, make_video(id="bbb", url="https://youtu.be/bbb"))  # can be recorded again
+    assert ledger.load_seen_ids(path) == {"aaa", "bbb", "ccc"}
+
+
+def test_remove_entry_without_an_entry_changes_nothing(tmp_path):
+    path = tmp_path / "TRANSCRIBED_LEDGER.md"
+    assert ledger.remove_entry(path, "zzz") is False
+    assert not path.exists()
+    ledger.append_entry(path, make_video(id="aaa"))
+    before = path.read_text(encoding="utf-8")
+    assert ledger.remove_entry(path, "zzz") is False
+    assert path.read_text(encoding="utf-8") == before
