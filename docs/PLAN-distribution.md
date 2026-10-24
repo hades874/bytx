@@ -262,7 +262,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Done when:** both results are written into PRD §11.
 
 ### T6. CI and release workflow
-- [ ] Done · *Workflow written and its YAML checked; not run yet, because the branch isn't pushed. Tick once CI is green.* · **Needs:** T5a · **PRD:** R1.7, R1.5 (macOS install)
+- [x] Done (2026-10-25) · *First run green on the branch: `test` on Windows and Linux, `smoke` on Windows, Linux and macOS; `publish` skipped (not a tag). `publish` has `needs: [test, smoke]`, so a failing job blocks it; the tag-to-PyPI path runs for real in T10.* · **Needs:** T5a · **PRD:** R1.7, R1.5 (macOS install)
 
 **Files:** new `.github/workflows/ci.yml`, `pyproject.toml` (metadata).
 
