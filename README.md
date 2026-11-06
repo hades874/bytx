@@ -43,8 +43,8 @@ the JavaScript runtime YouTube needs (Deno), and audio is decoded without
 ffmpeg.
 
 ```
-uv tool install --python 3.12 bytx         # any OS; transcribes on the CPU
-uv tool install --python 3.12 "bytx[gpu]"  # Windows or Linux with an NVIDIA GPU: adds the CUDA libraries (about 1.3 GB)
+uv tool install --python 3.12 bytx-transcribe         # any OS; transcribes on the CPU
+uv tool install --python 3.12 "bytx-transcribe[gpu]"  # Windows or Linux with an NVIDIA GPU: adds the CUDA libraries (about 1.3 GB)
 
 bytx setup                                 # downloads the speech models once
 bytx doctor                                # checks everything is ready
@@ -55,7 +55,7 @@ bytx add "https://www.youtube.com/watch?v=XXXXXXXXXXX" --lang bn --run
 (about 1.6 GB) from Hugging Face. If [Ollama][ollama] is installed and running
 it also pulls its two models (about 5 GB); otherwise it skips them.
 
-Upgrade with `uv tool upgrade bytx`. Your library and settings are kept.
+Upgrade with `uv tool upgrade bytx-transcribe`. Your library and settings are kept.
 
 ### Ollama is optional
 

@@ -13,7 +13,7 @@ bytx works today, but only for one person: someone on Windows with an NVIDIA GPU
 
 ## 2. Goals
 
-1. **Installable anywhere:** on a fresh Windows, Linux or macOS machine, `uv tool install bytx` → `bytx setup` → `bytx add <url> --lang bn --run` produces a transcript with no clone, no torch and no manual ffmpeg or Deno install.
+1. **Installable anywhere:** on a fresh Windows, Linux or macOS machine, `uv tool install bytx-transcribe` → `bytx setup` → `bytx add <url> --lang bn --run` produces a transcript with no clone, no torch and no manual ffmpeg or Deno install.
 2. **Right-sized download:** users without an NVIDIA GPU never download the about 1.3 GB of CUDA libraries, and users without Ollama never download about 5 GB of LLM models, yet transcription and keyword search fully work for them.
 3. **No terminal for non-technical users (R2):** a Bangladeshi Windows user double-clicks `setup.exe` and ends up at a Bangla-language browser page where they paste a link and get a transcript.
 4. **Zero marginal cost per user:** all compute runs on the user's machine. Hosting is PyPI, Hugging Face and GitHub Releases, all free.
@@ -26,7 +26,7 @@ bytx works today, but only for one person: someone on Windows with an NVIDIA GPU
 | Hosted web service | YouTube blocks yt-dlp from cloud IPs, GPU cost grows per user, and downloading on strangers' behalf carries legal exposure. |
 | User accounts, multi-user, LAN access | `bytx serve` has no login, so it binds to `localhost` only. |
 | Settings page in the UI | `config.toml` overrides are enough, and a settings page doubles the surface to maintain. |
-| Auto-updater, telemetry | Upgrades are `uv tool upgrade bytx` or re-running `setup.exe`. No data leaves the machine. |
+| Auto-updater, telemetry | Upgrades are `uv tool upgrade bytx-transcribe` or re-running `setup.exe`. No data leaves the machine. |
 | Code signing (for now) | Costs money every year. An unsigned `setup.exe` plus SmartScreen instructions in Bangla is good enough to start. |
 | A smaller, faster Bangla model for CPU (for now) | Accuracy matters more than speed for transcripts. Revisit only if users report CPU speed stops them (see P2). |
 | Auto-detecting language with Whisper LID or YouTube metadata | This is an existing rule: both mislabel Bangla mixed with English. The language is always an explicit choice. |
@@ -93,10 +93,10 @@ Publish `bytx/tugstugi-medium-bn-ct2`: a float16 CTranslate2 conversion of `beng
 - `ensure_cuda_dll_paths` (`src/bytx/cuda_dll.py:41`) must tolerate the missing `nvidia` namespace. `find_spec("nvidia.cublas")` raises `ModuleNotFoundError` when the parent package is absent, which is exactly the CPU-only Windows install.
 - `yt-dlp[default,deno]` replaces the manual Deno install.
 - ffmpeg is no longer a user requirement. The pipeline never calls it (`src/bytx/fetch.py:216-226` downloads raw `bestaudio` and PyAV decodes it). `doctor` stops checking for it, and `bench` documents that it needs ffmpeg.
-- On a non-`[gpu]` install, `doctor` runs `nvidia-smi` and, if it finds a GPU, suggests `uv tool install "bytx[gpu]"`.
+- On a non-`[gpu]` install, `doctor` runs `nvidia-smi` and, if it finds a GPU, suggests `uv tool install "bytx-transcribe[gpu]"`.
 - When ASR runs on CPU, `WhisperModel` gets `cpu_threads` = physical cores (`src/bytx/transcribe.py:253`; the default today is 4).
 - [ ] A plain install on Windows downloads no `nvidia-*` wheel and transcribes on CPU without crashing.
-- [ ] `bytx[gpu]` on the RTX 4070 runs `cuda/float16` (`doctor` shows no fallback note).
+- [ ] `bytx-transcribe[gpu]` on the RTX 4070 runs `cuda/float16` (`doctor` shows no fallback note).
 - [ ] The install succeeds on macOS (CPU).
 - [ ] One real YouTube and one real Facebook download plus transcription succeed with ffmpeg off PATH and no system Deno. **This check gates dropping ffmpeg.**
 - [ ] CPU real-time factor on a Ryzen 5 5600 is re-measured with `bytx bench` against the 2.25 baseline.
@@ -109,11 +109,11 @@ Port `scripts/redo_video.py` into the CLI with the same behaviour. A dry run by 
 
 **R1.7 CI and release.**
 GitHub Actions run `pytest` and `ruff check` on `windows-latest` and `ubuntu-latest` for every push and PR. A `v*` tag builds and publishes to PyPI through trusted publishing (no stored token).
-- [ ] Tagging `v0.2.0` produces a PyPI release that `uv tool install bytx` installs.
+- [ ] Tagging `v0.2.0` produces a PyPI release that `uv tool install bytx-transcribe` installs.
 - [ ] A failing test blocks publishing.
 
 **R1.8 Docs and repo cleanup.**
-- README: install (`uv tool install bytx` / `"bytx[gpu]"`), the data folder and `BYTX_HOME`, Ollama as optional, CPU speed expectations (about 2.25× the audio's length on a 6-core desktop CPU, slower on laptops), macOS CPU-only, a Linux GPU `LD_LIBRARY_PATH` note marked community-tested, the glossary format, and a responsible-use note (respect copyright and platform terms).
+- README: install (`uv tool install bytx-transcribe` / `"bytx-transcribe[gpu]"`), the data folder and `BYTX_HOME`, Ollama as optional, CPU speed expectations (about 2.25× the audio's length on a 6-core desktop CPU, slower on laptops), macOS CPU-only, a Linux GPU `LD_LIBRARY_PATH` note marked community-tested, the glossary format, and a responsible-use note (respect copyright and platform terms).
 - `CLAUDE.md` and `docs/SOP-video-transcription.md` are rewritten for the installed `bytx`: no `env.ps1`, no `uv run`, and `bytx remove` replaces the redo script.
 - `env.ps1`, `urls.txt` and `glossary.txt` (personal) leave the repo.
 - [ ] A README-only walkthrough on a fresh machine reaches a transcript.
@@ -145,7 +145,7 @@ Every visible string lives in one table per language (`bn`, `en`). Bangla is the
 **R2.4 Windows installer.**
 `install.ps1` (in the repo, served from GitHub raw):
 1. installs uv with its official installer;
-2. runs `uv tool install bytx`, or `"bytx[gpu]"` if `nvidia-smi` finds a GPU;
+2. runs `uv tool install bytx-transcribe`, or `"bytx-transcribe[gpu]"` if `nvidia-smi` finds a GPU;
 3. installs Ollama with the official installer if the user chose it;
 4. runs `bytx setup`;
 5. creates Desktop and Start-menu shortcuts that run `bytx serve`.
@@ -201,7 +201,7 @@ No telemetry, so only public counters and release checklists are used.
 | Question | Owner | Blocking? |
 |---|---|---|
 | Create a Hugging Face account and a `bytx` organisation (the name was free on 2026-10-22). | Maintainer | Blocks R1.3 |
-| Claim `bytx` on PyPI and configure the trusted publisher for this repo (the name was free on 2026-10-22). | Maintainer | Blocks R1.7 |
+| Claim `bytx-transcribe` on PyPI and configure the trusted publisher for this repo (`bytx` was free on 2026-10-22; an unrelated project took it on 2026-11-03). | Maintainer | Blocks R1.7 |
 | Do real YouTube and Facebook downloads work with ffmpeg off PATH, and does yt-dlp find the pip-installed Deno? **Partly answered 2026-10-22 (spike S0):** with neither ffmpeg nor Deno on PATH (the venv's Scripts folder off PATH, as in a `uv tool` install), yt-dlp reports `JS runtimes: deno-2.9.8`, so it finds the pip Deno by itself. A YouTube `bestaudio` download (webm/opus, 265 s) decoded with PyAV, no ffmpeg. Facebook is not checked yet: the library has no Facebook video. | Engineering | Facebook part only: checked in T5d |
 | Do Linux GPU installs find the pip CUDA libraries without `LD_LIBRARY_PATH`? There's no Linux GPU machine to test on. | Community / engineering | No (documented as community-tested) |
 | During the maintainer migration, reuse the existing local `models/` (3 GB) or download again from Hugging Face? | Engineering | No |
@@ -226,7 +226,7 @@ No hard deadlines. Order:
 | Q2 | First users: technical, then non-technical Windows users |
 | Q3 | No servers; everything local |
 | Q4 | Maintainer's library moves to a per-user data folder |
-| Q5 | Distribute on PyPI (`uv tool install bytx`) |
+| Q5 | Distribute on PyPI (`uv tool install bytx-transcribe`; the command, import package and data folder stay `bytx`) |
 | Q6 | Officially Windows + Linux (NVIDIA), best-effort CPU-only on any OS including macOS |
 | Q7 | Ollama optional |
 | Q8 | Publish a pre-converted Bangla model on Hugging Face |

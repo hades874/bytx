@@ -3,7 +3,7 @@
 Applies to anyone (human or AI agent) who is asked to "transcribe the new video(s) in `urls.txt`" or
 similar. Follow it in order. Do not skip step 2 or step 5.
 
-`bytx` here is the installed command (`uv tool install bytx`, or `uv tool install --editable ".[gpu]"`
+`bytx` here is the installed command (`uv tool install bytx-transcribe`, or `uv tool install --editable ".[gpu]"`
 from a clone). Your library lives in the data folder: `$BYTX_HOME` if set, else `~/bytx`. `bytx doctor`
 prints where it is. Paths below are relative to it.
 

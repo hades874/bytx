@@ -1,5 +1,6 @@
 [project]
-name = "bytx"
+# `bytx` on PyPI belongs to an unrelated project; the command and import package stay `bytx`.
+name = "bytx-transcribe"
 version = "0.1.0"
 description = "Local Bangla and English YouTube and Facebook transcription and searchable knowledge store (faster-whisper + Ollama)"
 readme = "README.md"
@@ -55,6 +56,9 @@ convert = [
 [build-system]
 requires = ["uv_build>=0.12.9,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "bytx"
 
 [dependency-groups]
 dev = [

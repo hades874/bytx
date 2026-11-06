@@ -376,7 +376,7 @@ def test_doctor_suggests_the_gpu_version_for_an_unused_nvidia_gpu(config_path, m
     monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/bin/{tool}")
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
     output = " ".join(runner.invoke(cli.app, ["doctor", "--config", config_path]).output.split())
-    assert "RTX 4070" in output and 'uv tool install --reinstall --python 3.12 "bytx[gpu]"' in output
+    assert "RTX 4070" in output and 'uv tool install --reinstall --python 3.12 "bytx-transcribe[gpu]"' in output
 
 
 def test_doctor_gives_no_gpu_tip_when_the_gpu_version_is_installed(config_path, monkeypatch):
@@ -384,7 +384,7 @@ def test_doctor_gives_no_gpu_tip_when_the_gpu_version_is_installed(config_path, 
     monkeypatch.setattr(cli, "_gpu_extra_installed", lambda: True)
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: _NvidiaSmi())
     result = runner.invoke(cli.app, ["doctor", "--config", config_path])
-    assert "bytx[gpu]" not in result.output
+    assert "bytx-transcribe[gpu]" not in result.output
 
 
 def test_doctor_shows_the_data_folder_and_whether_settings_exist(config_path, monkeypatch):

@@ -29,13 +29,15 @@ Last updated 2026-11-06. One row per open item; a task gets its own row once it 
 | Facebook titles from yt-dlp start with "13K views · 131 reactions \| " and end with " \| " and the uploader's name; the prefix reaches export folder names, `INDEX.md` and summary headings | Found 2026-11-03, not scheduled | Maintainer: schedule it |
 | Responsible-use wording in the README | Draft | Maintainer approval |
 | `docs/README.bn.md` | Written | Review by a native speaker |
-| T10 Release `0.2.0` | Not started | The PyPI pending publisher, the fresh-VM checks |
+| T10 Release `0.2.0` | Not started | The PyPI pending publisher for `bytx-transcribe`, the fresh-VM checks |
 | T11 Maintainer migration | Not started; can start now as an editable install (T8 is done) | Maintainer |
 | U1–U13 Release `0.3.0` | Not started | T10 |
 
 ## Settled design
 
 These are the decisions the PRD left open. Don't re-open them without the maintainer.
+
+- **The PyPI name is `bytx-transcribe`** (decided 2026-11-06). An unrelated crypto-exchange SDK took `bytx` on 2026-11-03. Only the distribution name changes: the command, the import package (`[tool.uv.build-backend] module-name = "bytx"`), `~/bytx`, `BYTX_HOME`, the Hugging Face organisation and the GitHub repo all stay `bytx`. Install and upgrade commands, and the `[gpu]` hint in `doctor`, use `bytx-transcribe`.
 
 - **ASR models live in the Hugging Face cache, not in `~/bytx`.** `HF_HOME` moves the cache. `paths.models_dir` is deleted. A new module, `src/bytx/models.py`, is the only code that knows where models are:
   - `local_path(model_cfg) -> Path`. If `source` is an existing folder it is used as it is (a converted or maintainer model). `config.py` resolves a relative folder against the data folder, never the current folder. Otherwise `source` must be a valid repo id (else `ModelsMissing`: "fix its `source`"), and it calls `snapshot_download(source, local_files_only=True)` and checks that `model.bin` exists. Raises `ModelsMissing` with "run `bytx setup`".
@@ -72,7 +74,7 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 
 | Action | Blocks |
 |---|---|
-| Create the PyPI pending trusted publisher: project `bytx`, owner `hades874`, repo `bytx`, workflow `ci.yml`, environment `pypi` | T10 |
+| Create the PyPI pending trusted publisher: project `bytx-transcribe`, owner `hades874`, repo `bytx`, workflow `ci.yml`, environment `pypi` | T10 |
 | Choose or provide the accuracy reference for the retry change | T5e |
 | Approve the responsible-use wording in the README (PRD §9) | T10 |
 | Have a native speaker review `docs/README.bn.md` | T10 |
@@ -261,11 +263,11 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 - Check Deno with the same lookup yt-dlp uses (per S0); if T5c sets `js_runtimes`, check that path.
 - Get the yt-dlp version from `yt_dlp.version.__version__`.
 - Print the data folder and whether `config.toml` exists there ("defaults in use").
-- GPU hint: if the `nvidia` package is not importable, run `nvidia-smi -L` (if it is on PATH). If it lists a GPU, suggest `uv tool install "bytx[gpu]"`.
+- GPU hint: if the `nvidia` package is not importable, run `nvidia-smi -L` (if it is on PATH). If it lists a GPU, suggest `uv tool install "bytx-transcribe[gpu]"`.
 - Show the "fell back from cuda" note only when the gpu extra is installed.
 - `bench`: say in its docstring and `--help` that `--clip` needs ffmpeg, and turn a `FileNotFoundError` from the ffmpeg subprocess into a friendly message.
 
-**Done when:** on a plain install with no system ffmpeg or Deno, `doctor` reports no failures. On the RTX 4070 with `bytx[gpu]`, `doctor` shows `cuda/float16` with no fallback note.
+**Done when:** on a plain install with no system ffmpeg or Deno, `doctor` reports no failures. On the RTX 4070 with `bytx-transcribe[gpu]`, `doctor` shows `cuda/float16` with no fallback note.
 
 **Tests:** replace `test_doctor_says_deno_is_only_needed_for_youtube`. Add: no ffmpeg check, the GPU hint (mock `shutil.which` and `subprocess.run`), and the data folder line.
 
@@ -316,7 +318,7 @@ Add `[project.urls]`, `classifiers` and `keywords` to pyproject.
 **Files:** `README.md`, `CLAUDE.md`, `docs/SOP-video-transcription.md`, `.gitignore`, `pyproject.toml` (the `testpaths` comment).
 
 **Do:**
-- README covers: install (`uv tool install bytx` and `uv tool install "bytx[gpu]"`); then `bytx setup`, `bytx doctor`, `bytx add <url> --lang bn --run`; the data folder and `BYTX_HOME`; Ollama as optional; CPU speed (about 2.25× the audio's length on a 6-core desktop, slower on laptops); macOS CPU-only; the Linux GPU `LD_LIBRARY_PATH` note marked community-tested; the glossary format (moved from the header of `glossary.txt`); and a responsible-use note (respect copyright and platform terms). Also say that `bench --clip` needs ffmpeg.
+- README covers: install (`uv tool install bytx-transcribe` and `uv tool install "bytx-transcribe[gpu]"`); then `bytx setup`, `bytx doctor`, `bytx add <url> --lang bn --run`; the data folder and `BYTX_HOME`; Ollama as optional; CPU speed (about 2.25× the audio's length on a 6-core desktop, slower on laptops); macOS CPU-only; the Linux GPU `LD_LIBRARY_PATH` note marked community-tested; the glossary format (moved from the header of `glossary.txt`); and a responsible-use note (respect copyright and platform terms). Also say that `bench --clip` needs ffmpeg.
 - CLAUDE.md and the SOP target the installed `bytx`: no `env.ps1`, no `uv run` for daily use, and `bytx remove` instead of the redo script.
 - Run `git rm --cached env.ps1 urls.txt glossary.txt` and add those three files to `.gitignore`. The local copies stay until T11.
 
@@ -370,7 +372,7 @@ Fixes from reviewing the release 1 code:
 - Open a PR from `distribution` to `master` and merge it once CI is green, so the release and the README GitHub shows come from `master`.
 - On `master`, bump `version` to `0.2.0`, then tag and push `v0.2.0`.
 
-**Done when:** `uv tool install bytx` installs 0.2.0 from PyPI.
+**Done when:** `uv tool install bytx-transcribe` installs 0.2.0 from PyPI.
 
 ### T11. Maintainer migration (PRD §7)
 - [ ] Done · **Needs:** T10 (or T8 for an editable install before the release)
@@ -518,7 +520,7 @@ Fixes from reviewing the release 1 code:
 
 **Do:** a PowerShell script with `$ErrorActionPreference = 'Stop'` and `Start-Transcript` to `%TEMP%\bytx-install.log`:
 1. If uv is missing, run the official installer (`irm https://astral.sh/uv/install.ps1 | iex`), then call `uv` by its full path (`$env:USERPROFILE\.local\bin\uv.exe`).
-2. If `nvidia-smi -L` succeeds, the spec is `bytx[gpu]`; otherwise `bytx`. Run `uv tool install --upgrade --python 3.12 <spec>`. A re-run upgrades in place and never touches `~/bytx`.
+2. If `nvidia-smi -L` succeeds, the spec is `bytx-transcribe[gpu]`; otherwise `bytx-transcribe`. Run `uv tool install --upgrade --python 3.12 <spec>`. A re-run upgrades in place and never touches `~/bytx`.
 3. With `-WithOllama`, if Ollama is not installed, download the official `OllamaSetup.exe` and run it silently. Check its silent flags first.
 4. Refresh `$env:Path` from the user and machine registry values, then run `bytx setup`.
 5. Create Desktop and Start-menu shortcuts (WScript.Shell) that run `<uv tool dir --bin>\bytx.exe serve`.

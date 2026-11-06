@@ -157,7 +157,7 @@ def doctor(config: str | None = _config_option) -> None:
         console.print(
             f"[yellow]TIP[/yellow]  {escape(gpu)} found, but this bytx runs on the CPU. For much faster "
             "transcription install the GPU version: "
-            + escape('uv tool install --reinstall --python 3.12 "bytx[gpu]"')
+            + escape('uv tool install --reinstall --python 3.12 "bytx-transcribe[gpu]"')
         )
 
     from .transcribe import ModelLoadError, Transcriber
