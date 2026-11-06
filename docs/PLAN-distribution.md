@@ -29,7 +29,7 @@ Last updated 2026-11-06. One row per open item; a task gets its own row once it 
 | Facebook titles from yt-dlp start with "13K views · 131 reactions \| " and end with " \| " and the uploader's name; the prefix reaches export folder names, `INDEX.md` and summary headings | Found 2026-11-03, not scheduled | Maintainer: schedule it |
 | Responsible-use wording in the README | Draft | Maintainer approval |
 | `docs/README.bn.md` | Written | Review by a native speaker |
-| T10 Release `0.2.0` | Not started | The PyPI pending publisher for `bytx-transcribe`, the fresh-VM checks |
+| T10 Release `0.2.0` | Not started. PyPI pending publisher for `bytx-transcribe` registered 2026-11-06; nothing is published before T10 (maintainer's choice), so the name stays unreserved until then | The fresh-VM checks, the README wording, the `README.bn.md` review |
 | T11 Maintainer migration | Not started; can start now as an editable install (T8 is done) | Maintainer |
 | U1–U13 Release `0.3.0` | Not started | T10 |
 
@@ -74,7 +74,6 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 
 | Action | Blocks |
 |---|---|
-| Create the PyPI pending trusted publisher: project `bytx-transcribe`, owner `hades874`, repo `bytx`, workflow `ci.yml`, environment `pypi` | T10 |
 | Choose or provide the accuracy reference for the retry change | T5e |
 | Approve the responsible-use wording in the README (PRD §9) | T10 |
 | Have a native speaker review `docs/README.bn.md` | T10 |
@@ -365,7 +364,7 @@ Fixes from reviewing the release 1 code:
 - Write `docs/README.bn.md`, a Bangla quick-start for technical users, linked from the README.
 
 ### T10. Release `0.2.0` (Maintainer + engineering)
-- [ ] Done · **Needs:** T6, T7, T8, plus the PyPI pending publisher
+- [ ] Done · **Needs:** T6, T7, T8, plus the PyPI pending publisher (registered 2026-11-06)
 
 **Do:**
 - Run the fresh-VM checklist on Windows, Ubuntu and macOS (CPU), following only the README, to a transcript. Record the measured first-time download sizes (plain, `[gpu]`, with Ollama) in the README and PRD §9.
