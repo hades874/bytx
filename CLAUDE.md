@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `bytx` is a local, free/open-source CLI that transcribes Bangla and English YouTube/Facebook videos (faster-whisper) into a searchable, askable library (SQLite FTS5 + Ollama). README.md is detailed and accurate; read it for user-facing behavior, config semantics and the measured rationale behind design choices.
 
-Distribution roadmap and settled decisions: `docs/PRD-distribution.md`. Read it before changing install, config/data paths, models, dependencies or the UI. Task breakdown (pick the next unchecked task there): `docs/PLAN-distribution.md`.
+Distribution roadmap and settled decisions: `docs/PRD-distribution.md`. Read it before changing install, config/data paths, models, dependencies or the UI. Task breakdown (pick the next unchecked task there; its Status table is the tracker): `docs/PLAN-distribution.md`. Dated log of manual checks, measurements and decisions (append to it): `docs/LOG-distribution.md`.
 
 ## Commands
 

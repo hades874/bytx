@@ -83,8 +83,10 @@ en = "large-v3-turbo"
 # the data folder unless absolute). `language` pins a model to one language;
 # "" means multilingual (the language is chosen per video).
 [asr.models.tugstugi-medium-bn]
-source = "bengaliAI/tugstugi_bengaliai-asr_whisper-medium"
+# float16 CTranslate2 copy of bengaliAI/tugstugi_bengaliai-asr_whisper-medium
+source = "bytx/tugstugi-medium-bn-ct2"
 language = "bn"
+already_ct2 = true
 
 [asr.models.large-v3-turbo]
 source = "deepdml/faster-whisper-large-v3-turbo-ct2"

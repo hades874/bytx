@@ -13,8 +13,25 @@ The PRD says *what* and *why*. This file splits it into tasks that are each abou
 1. Pick the first unchecked task whose **Needs** are all checked (see [Order](#order)).
 2. Read the files it lists before changing them. The line numbers were right on 2026-10-22.
 3. Finish **Done when** and **Tests**, then run `uv run pytest` and `uv run ruff check .`. Both must pass.
-4. Tick the task's box in the same commit as the work.
+4. Tick the task's box and update its row in [Status](#status) in the same commit as the work. Add a dated entry to [`LOG-distribution.md`](LOG-distribution.md) for anything a commit doesn't show: a manual check, a measurement, a maintainer action, a decision.
 5. Tasks marked **Maintainer** need Hasan's accounts, hardware or judgment. Prepare everything around them, then stop and ask.
+
+## Status
+
+Last updated 2026-11-06. One row per open item; a task gets its own row once it starts.
+
+| Item | State | Waiting on |
+|---|---|---|
+| S0, T1a–T5d, T6, T7, T8, T9, R1 review fixes | Done | — |
+| T5e Temperature retries on Bangla speech | Next. Cause found and measured | Maintainer: the accuracy reference for the change |
+| `fetch.download_audio` returns a path when yt-dlp failed to download (`ignoreerrors`); the run then fails with "file not found" | Found 2026-10-25, not scheduled | Maintainer: schedule it |
+| The CPU fallback warning says "requested cuda" when the config asked for `cpu` | Found 2026-10-25, not scheduled | Maintainer: schedule it |
+| Facebook titles from yt-dlp start with "13K views · 131 reactions \| " and end with " \| " and the uploader's name; the prefix reaches export folder names, `INDEX.md` and summary headings | Found 2026-11-03, not scheduled | Maintainer: schedule it |
+| Responsible-use wording in the README | Draft | Maintainer approval |
+| `docs/README.bn.md` | Written | Review by a native speaker |
+| T10 Release `0.2.0` | Not started | The PyPI pending publisher, the fresh-VM checks |
+| T11 Maintainer migration | Not started; can start now as an editable install (T8 is done) | Maintainer |
+| U1–U13 Release `0.3.0` | Not started | T10 |
 
 ## Settled design
 
@@ -55,10 +72,10 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 
 | Action | Blocks |
 |---|---|
-| Create a Hugging Face account and the `bytx` organisation | T8 |
-| Upload the Bangla model with your own token (commands prepared in T8) | T8 |
 | Create the PyPI pending trusted publisher: project `bytx`, owner `hades874`, repo `bytx`, workflow `ci.yml`, environment `pypi` | T10 |
-| Run the real-download check with ffmpeg off PATH, and the CPU benchmark on the Ryzen 5 5600 | T5d |
+| Choose or provide the accuracy reference for the retry change | T5e |
+| Approve the responsible-use wording in the README (PRD §9) | T10 |
+| Have a native speaker review `docs/README.bn.md` | T10 |
 | Run the fresh-VM checklists (Windows, Ubuntu, macOS; later Windows 10/11 for `setup.exe`) | T10, U13 |
 | Take the SmartScreen screenshot | U12 |
 | Migrate your own library, and approve deleting the repo copies | T11 |
@@ -253,13 +270,31 @@ These are the decisions the PRD left open. Don't re-open them without the mainta
 **Tests:** replace `test_doctor_says_deno_is_only_needed_for_youtube`. Add: no ffmpeg check, the GPU hint (mock `shutil.which` and `subprocess.run`), and the data folder line.
 
 ### T5d. Manual gates for R1.5 (Maintainer)
-- [ ] Done · **Needs:** T5c · **PRD:** R1.5 · *CPU benchmark done (RTF 0.90 at 4 threads, 0.87 at 6, on a different clip than the 2.25 baseline; see PRD §11). Still open: one real Facebook download + transcription with ffmpeg off PATH, and settling the README's CPU speed figure.*
+- [x] Done (2026-10-25) · **Needs:** T5c · **PRD:** R1.5 · *Facebook passed with ffmpeg and Deno off PATH, so ffmpeg can go. CPU measured on three clips: RTF 1.01, 1.72 and 7.4–7.9; the slow one is temperature retries, not the CPU (PRD §11). The README figure moved to T5e, after the fix.*
 
 **Do:**
 - With ffmpeg off PATH and no system Deno, `bytx add <youtube-url> --lang <x> --run` and the same for one Facebook URL must both succeed. Read each transcript. **This check gates dropping ffmpeg.**
 - Re-measure the CPU real-time factor on the Ryzen 5 5600 with `bytx bench` on the same 180 s clip, and compare with the 2.25 baseline.
 
 **Done when:** both results are written into PRD §11.
+
+### T5e. Temperature retries on Bangla speech
+- [ ] Done · **Needs:** T5d · **PRD:** R1.5, Q27 (documented CPU speed)
+
+**Files:** `src/bytx/transcribe.py` (`_decode_clip`, line 432), `src/bytx/defaults.toml`, `src/bytx/config.py`, `tests/test_transcribe.py`, `README.md` (CPU speed), PRD §11.
+
+**Why:** bytx leaves faster-whisper's retry defaults on: a clip whose text has a compression ratio above 2.4 is decoded again at temperatures 0.2 to 1.0. Dense, fast Bangla speech crosses 2.4 without repeating, so such a video takes about 7× longer on both CPU and GPU, and the retries still fail (PRD §11, 2026-10-25).
+
+**Do:**
+- Choose the setting by measurement. Candidates: a higher `compression_ratio_threshold` for Bangla (per model, like `max_clip_seconds`), or no retries (`temperature=0`), since `collapse_repeated_ngrams` already removes repeats.
+- Check accuracy before changing the default. On `f0XPHjhsaKA` 1:00–4:00 (9 retried clips) and `UkLJpcuJOIA` 1:00–4:00 (control, no retries), score the current output and each candidate against a reference with `bytx bench --ref`. Settle the reference with the maintainer first: a corrected transcript is best; the YouTube captions are a weaker fallback.
+- Make the chosen setting a config key with a comment in `defaults.toml`, passed through `_decode_clip`.
+- Re-measure CPU speed on the three T5d clips and write the README figure and PRD §11.
+- Note: `_decode_range` checks the token limit after `collapse_repeated_ngrams`, so a clip that loops up to the cap is never re-split. Decide whether that matters once the retries are settled.
+
+**Done when:** `f0XPHjhsaKA`'s clip transcribes at about the speed of the other two with no loss of accuracy against the reference, and the README states a measured CPU figure.
+
+**Tests:** the configured setting reaches `WhisperModel.transcribe` (monkeypatched). The English model's decoding is unchanged unless the measurement says otherwise.
 
 ### T6. CI and release workflow
 - [x] Done (2026-10-25) · *First run green on the branch: `test` on Windows and Linux, `smoke` on Windows, Linux and macOS; `publish` skipped (not a tag). `publish` has `needs: [test, smoke]`, so a failing job blocks it; the tag-to-PyPI path runs for real in T10.* · **Needs:** T5a · **PRD:** R1.7, R1.5 (macOS install)
@@ -302,7 +337,7 @@ Fixes from reviewing the release 1 code:
 ## Release 1: maintainer-gated
 
 ### T8. Publish the Bangla model on Hugging Face
-- [ ] Done · *Model card written (`docs/hf/tugstugi-medium-bn-ct2.md`) and the upload commands checked against `hf` 1.32. Waiting on the maintainer: create the `bytx` organisation, then run the three commands below. After that: switch `defaults.toml` and add the test.* · **Needs:** T2a, plus the maintainer's Hugging Face organisation · **PRD:** R1.3
+- [x] Done (2026-11-06) · *The maintainer created the `bytx` organisation and uploaded the model and card; the six files on the Hub match the local ones byte for byte. `defaults.toml` points at `bytx/tugstugi-medium-bn-ct2`, and a test checks every shipped model is `already_ct2`.* · **Needs:** T2a, plus the maintainer's Hugging Face organisation · **PRD:** R1.3
 
 **Do (engineering):**
 - Write `docs/hf/tugstugi-medium-bn-ct2.md`: model-card front matter (`license: apache-2.0`, `language: bn`, `library_name: ctranslate2`, tags `faster-whisper` and `whisper`, `base_model: bengaliAI/tugstugi_bengaliai-asr_whisper-medium`), credit to bengaliAI, float16 CTranslate2, the conversion command, and how bytx uses it.
@@ -332,7 +367,8 @@ Fixes from reviewing the release 1 code:
 
 **Do:**
 - Run the fresh-VM checklist on Windows, Ubuntu and macOS (CPU), following only the README, to a transcript. Record the measured first-time download sizes (plain, `[gpu]`, with Ollama) in the README and PRD §9.
-- Bump `version` to `0.2.0`, then tag and push `v0.2.0`.
+- Open a PR from `distribution` to `master` and merge it once CI is green, so the release and the README GitHub shows come from `master`.
+- On `master`, bump `version` to `0.2.0`, then tag and push `v0.2.0`.
 
 **Done when:** `uv tool install bytx` installs 0.2.0 from PyPI.
 
@@ -344,7 +380,7 @@ Fixes from reviewing the release 1 code:
 2. Set permanent user environment variables: `BYTX_HOME` (a folder on `D:\`), `HF_HOME`, `OLLAMA_MODELS`, and `UV_CACHE_DIR` / `UV_PYTHON_INSTALL_DIR` if wanted.
 3. Look at the target, then copy `data/`, `yt-transcribed-files/`, `TRANSCRIBED_LEDGER.md`, `glossary.txt` and `urls.txt` into `BYTX_HOME`.
 4. Run `bytx setup`. It downloads from Hugging Face rather than reusing `models/`, which also checks T8 end to end.
-5. Verify: `bytx status` shows 45 videos (39 bn, 6 en, all `summarized`), `bytx search` returns hits, and `bytx ask` cites timestamps.
+5. Verify: `bytx status` shows every video in the old library (45 on 2026-10-22, 46 since 2026-11-03), all `summarized`, `bytx search` returns hits, and `bytx ask` cites timestamps.
 6. Only after verifying, and **after asking**, delete the old copies from the repo folder (`data/`, `models/`, `yt-transcribed-files/`, `ollama-models/`, `tools/`, the ledger and the personal files).
 
 ## Release 2 (`0.3.0`): web UI and Windows installer
@@ -525,7 +561,7 @@ S0 ─────────────────────────�
 T1a → T1b → T2a → T2b → T2c      │
           ├→ T3a → T3b ──────────┤
           └→ T4                  │
-T5a → T5b ─────────────→ T5c ←───┘ → T5d
+T5a → T5b ─────────────→ T5c ←───┘ → T5d → T5e
 T5a → T6
 (all R1 code) → T7 → T8 → T9 → T10 → T11
 T10 → U1 → U2 ─┬→ U5, U7, U8, U9
@@ -543,7 +579,7 @@ Within release 1, follow the PRD's order when nothing else decides: data folder 
 | R1.2 Packaged defaults + overrides | T1a |
 | R1.3 Pre-converted model; setup downloads only | T2a, T2b, T2c, T8 |
 | R1.4 Ollama optional | T3a, T3b |
-| R1.5 Dependencies and platforms | S0, T5a, T5b, T5c, T5d, T6 (macOS smoke) |
+| R1.5 Dependencies and platforms | S0, T5a, T5b, T5c, T5d, T5e, T6 (macOS smoke) |
 | R1.6 `bytx remove` | T4 |
 | R1.7 CI and release | T6, T10 |
 | R1.8 Docs and repo cleanup | T7 |

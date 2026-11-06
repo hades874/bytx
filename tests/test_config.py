@@ -91,6 +91,12 @@ def test_shipped_config_models_are_pinned_or_multilingual_as_intended(tmp_path):
     assert cfg.asr.models["large-v3-turbo"].max_clip_seconds == 15
 
 
+def test_shipped_models_are_ctranslate2_so_setup_never_needs_torch(tmp_path):
+    models = shipped(tmp_path).asr.models
+    assert {k: m.already_ct2 for k, m in models.items()} == {k: True for k in models}
+    assert models["tugstugi-medium-bn"].source == "bytx/tugstugi-medium-bn-ct2"
+
+
 def test_shipped_config_summaries_follow_the_video_language(tmp_path):
     assert shipped(tmp_path).summarize.language == "auto"
 
